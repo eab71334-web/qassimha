@@ -39,9 +39,9 @@ jobs:
         run: |
           printf '%s\n' '-dontwarn com.google.mlkit.vision.text.**' > android/app/proguard-rules.pro
           if [ -f android/app/build.gradle.kts ]; then
-            sed -i 's|signingConfig = signingConfigs.getByName("debug")|&\n            proguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro")|' android/app/build.gradle.kts
+            sed -i 's|signingConfig = signingConfigs.getByName("debug")|&\n            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")|' android/app/build.gradle.kts
           else
-            sed -i "s|signingConfig signingConfigs.debug|\&\n            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'|" android/app/build.gradle
+            sed -i "s|signingConfig signingConfigs.debug|\&\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'|" android/app/build.gradle
           fi
           grep -n proguardFiles android/app/build.gradle* || echo "WARNING: proguardFiles was not added"
 
