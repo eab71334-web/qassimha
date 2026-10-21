@@ -30,7 +30,14 @@ jobs:
         run: sed -i 's/android:label="[^"]*"/android:label="قسّمها"/' android/app/src/main/AndroidManifest.xml
 
       - run: flutter pub get
-      - run: flutter build apk --release --no-shrink
+      - name: Build APK
+        run: |
+          set -o pipefail
+          flutter build apk --release --no-shrink 2>&1 | tee build.log
+
+      - name: Show Android errors
+        if: failure()
+        run: grep -n -E -B3 -A8 "What went wrong|Missing class|error:|Execution failed" build.log | head -120 || true
 
       - uses: actions/upload-artifact@v4
         with:
