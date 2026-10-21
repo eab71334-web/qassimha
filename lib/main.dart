@@ -1,14 +1,20 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() => runApp(const QassimhaApp());
 
 const String kCurrency = 'د.ل';
+const String kTagline = 'قُسّمت بتطبيق «قسّمها»';
 
 // ───────────────────────── النماذج ─────────────────────────
 
@@ -26,26 +32,26 @@ class Item {
   Set<String> eaters;
 }
 
-/// دفعة خرجت من المحفظة (فاتورة مدفوعة).
-class Payment {
-  Payment(this.title, this.total, this.date, this.shares);
+/// فاتورة محفوظة في السجل.
+class SavedBill {
+  SavedBill(this.title, this.total, this.date, this.lines);
   final String title;
   final double total;
   final DateTime date;
-  final Map<String, double> shares;
+  final Map<String, double> lines; // اسم الشخص -> المبلغ
 
   Map<String, dynamic> toJson() => {
         'title': title,
         'total': total,
         'date': date.toIso8601String(),
-        'shares': shares,
+        'lines': lines,
       };
 
-  factory Payment.fromJson(Map<String, dynamic> j) => Payment(
+  factory SavedBill.fromJson(Map<String, dynamic> j) => SavedBill(
         j['title'] as String,
         (j['total'] as num).toDouble(),
         DateTime.parse(j['date'] as String),
-        (j['shares'] as Map).map(
+        (j['lines'] as Map).map(
           (k, v) => MapEntry(k as String, (v as num).toDouble()),
         ),
       );
@@ -54,33 +60,24 @@ class Payment {
 class Bill extends ChangeNotifier {
   final List<Person> people = [];
   final List<Item> items = [];
-  final Map<String, double> deposits = {}; // مجموع ما أودعه كل شخص
-  final List<Payment> history = [];
+  final List<SavedBill> saved = [];
   double extraPercent = 0; // خدمة / ضريبة / بقشيش
+  double roundStep = 0; // 0 = بدون تقريب، 0.5، 1
   int _seq = 0;
 
   String _id() => '${_seq++}';
-
-  // ── الأشخاص والبنود ──
 
   void addPerson(String name) {
     people.add(Person(_id(), name));
     notifyListeners();
   }
 
-  bool hasMoney(Person p) =>
-      (deposits[p.id] ?? 0) != 0 ||
-      history.any((h) => h.shares.containsKey(p.id));
-
-  /// يرجع false إذا للشخص حركة مالية في المحفظة فلا يُحذف.
-  bool removePerson(Person p) {
-    if (hasMoney(p)) return false;
+  void removePerson(Person p) {
     people.remove(p);
     for (final i in items) {
       i.eaters.remove(p.id);
     }
     notifyListeners();
-    return true;
   }
 
   void addItem(String name, double price) {
@@ -105,9 +102,14 @@ class Bill extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setRound(double v) {
+    roundStep = v;
+    notifyListeners();
+  }
+
   int get unassignedCount => items.where((i) => i.eaters.isEmpty).length;
 
-  /// نصيب كل شخص من الفاتورة الحالية (بعد إضافة النسبة الإضافية).
+  /// نصيب كل شخص (بعد النسبة الإضافية والتقريب).
   Map<String, double> get totals {
     final result = {for (final p in people) p.id: 0.0};
     final factor = 1 + extraPercent / 100;
@@ -118,37 +120,38 @@ class Bill extends ChangeNotifier {
         if (result.containsKey(id)) result[id] = result[id]! + share;
       }
     }
+    if (roundStep > 0) {
+      for (final id in result.keys.toList()) {
+        final v = result[id]!;
+        if (v > 0) {
+          result[id] = (v / roundStep - 1e-9).ceil() * roundStep;
+        }
+      }
+    }
     return result;
   }
 
   double get grandTotal => totals.values.fold(0.0, (a, b) => a + b);
 
-  // ── المحفظة المشتركة ──
-
-  double get walletBalance =>
-      deposits.values.fold(0.0, (a, b) => a + b) -
-      history.fold(0.0, (a, p) => a + p.total);
-
-  /// رصيد الشخص: ما أودعه ناقص حصصه من الفواتير المدفوعة.
-  double personBalance(String id) =>
-      (deposits[id] ?? 0) -
-      history.fold(0.0, (a, p) => a + (p.shares[id] ?? 0));
-
-  void deposit(String personId, double amount) {
-    deposits[personId] = (deposits[personId] ?? 0) + amount;
-    notifyListeners();
-  }
-
-  /// يدفع الفاتورة الحالية من المحفظة ويسجّلها ويفرّغ البنود.
-  void payFromWallet(String title) {
-    final shares = Map<String, double>.of(totals)
-      ..removeWhere((_, v) => v == 0);
-    history.insert(0, Payment(title, grandTotal, DateTime.now(), shares));
+  /// يحفظ الفاتورة في السجل ويفرّغ البنود.
+  void saveAndClear(String title) {
+    final t = totals;
+    final lines = <String, double>{};
+    for (final p in people) {
+      final v = t[p.id] ?? 0;
+      if (v > 0) lines[p.name] = v;
+    }
+    saved.insert(0, SavedBill(title, grandTotal, DateTime.now(), lines));
     items.clear();
     notifyListeners();
   }
 
-  // ── الملخص ──
+  void deleteSaved(SavedBill b) {
+    saved.remove(b);
+    notifyListeners();
+  }
+
+  // ── نصوص المشاركة ──
 
   String summaryText() {
     final t = totals;
@@ -158,7 +161,16 @@ class Bill extends ChangeNotifier {
     }
     buf.writeln('────────');
     buf.writeln('الإجمالي: ${fmt(grandTotal)} $kCurrency');
+    buf.writeln(kTagline);
     return buf.toString();
+  }
+
+  String requestText(Person p) {
+    final v = totals[p.id] ?? 0;
+    return 'مرحباً ${p.name} 👋\n'
+        'حصتك من الحساب: ${fmt(v)} $kCurrency\n'
+        'من فضلك حوّلها لي. شكراً!\n'
+        '$kTagline';
   }
 
   // ── الحفظ على الجهاز ──
@@ -168,6 +180,7 @@ class Bill extends ChangeNotifier {
   Map<String, dynamic> toJson() => {
         'seq': _seq,
         'extra': extraPercent,
+        'round': roundStep,
         'people': [
           for (final p in people) {'id': p.id, 'name': p.name}
         ],
@@ -180,8 +193,7 @@ class Bill extends ChangeNotifier {
               'eaters': i.eaters.toList(),
             }
         ],
-        'deposits': deposits,
-        'history': [for (final h in history) h.toJson()],
+        'saved': [for (final s in saved) s.toJson()],
       };
 
   Future<void> load() async {
@@ -192,6 +204,7 @@ class Bill extends ChangeNotifier {
       final m = jsonDecode(s) as Map<String, dynamic>;
       _seq = (m['seq'] as num?)?.toInt() ?? 0;
       extraPercent = (m['extra'] as num?)?.toDouble() ?? 0;
+      roundStep = (m['round'] as num?)?.toDouble() ?? 0;
       people
         ..clear()
         ..addAll([
@@ -209,17 +222,12 @@ class Bill extends ChangeNotifier {
               Set<String>.from(i['eaters'] as List),
             )
         ]);
-      deposits
-        ..clear()
-        ..addAll((m['deposits'] as Map? ?? {}).map(
-          (k, v) => MapEntry(k as String, (v as num).toDouble()),
-        ));
-      history
-        ..clear()
-        ..addAll([
-          for (final h in (m['history'] as List? ?? []))
-            Payment.fromJson(Map<String, dynamic>.from(h as Map))
-        ]);
+      saved.clear();
+      for (final h in (m['saved'] as List? ?? [])) {
+        try {
+          saved.add(SavedBill.fromJson(Map<String, dynamic>.from(h as Map)));
+        } catch (_) {}
+      }
       super.notifyListeners();
     } catch (_) {
       // بيانات تالفة: نبدأ من جديد
@@ -325,12 +333,6 @@ class _HomePageState extends State<HomePage> {
     if (name != null && name.isNotEmpty) bill.addPerson(name);
   }
 
-  void _removePerson(Person p) {
-    if (!bill.removePerson(p)) {
-      _snack('لا يمكن حذف شخص لديه حركة في المحفظة');
-    }
-  }
-
   Future<void> _addItem() async {
     if (bill.people.isEmpty) {
       _snack('أضف الأشخاص أولاً');
@@ -385,77 +387,16 @@ class _HomePageState extends State<HomePage> {
     bill.addItem(name.isEmpty ? 'بند' : name, price);
   }
 
-  Future<void> _deposit() async {
-    if (bill.people.isEmpty) {
-      _snack('أضف الأشخاص أولاً');
-      return;
-    }
-    String personId = bill.people.first.id;
-    final amountCtrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSt) => AlertDialog(
-          title: const Text('إيداع في المحفظة'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButton<String>(
-                isExpanded: true,
-                value: personId,
-                items: [
-                  for (final p in bill.people)
-                    DropdownMenuItem(value: p.id, child: Text(p.name)),
-                ],
-                onChanged: (v) {
-                  if (v != null) setSt(() => personId = v);
-                },
-              ),
-              TextField(
-                controller: amountCtrl,
-                autofocus: true,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                  labelText: 'المبلغ',
-                  suffixText: kCurrency,
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('إلغاء'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('إيداع'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (ok != true) return;
-    final amount = parsePrice(amountCtrl.text);
-    if (amount == null || amount <= 0) {
-      if (!mounted) return;
-      _snack('المبلغ غير صحيح');
-      return;
-    }
-    bill.deposit(personId, amount);
-  }
-
-  Future<void> _payFromWallet() async {
+  Future<void> _saveBill() async {
     final title = await _askText(
-      'دفع الفاتورة من المحفظة',
+      'حفظ الفاتورة',
       'اسم الفاتورة (مثال: عشاء الخميس)',
-      confirm: 'ادفع',
+      confirm: 'احفظ',
     );
     if (title == null) return;
-    bill.payFromWallet(title.isEmpty ? 'فاتورة' : title);
+    bill.saveAndClear(title.isEmpty ? 'فاتورة' : title);
     if (!mounted) return;
-    _snack('تم الدفع من المحفظة');
+    _snack('تم حفظ الفاتورة في السجل');
   }
 
   Future<void> _copy() async {
@@ -464,15 +405,24 @@ class _HomePageState extends State<HomePage> {
     _snack('تم نسخ الملخص');
   }
 
-  Future<void> _share(BuildContext btnContext) async {
+  Future<void> _shareText(BuildContext btnContext, String text) async {
     final box = btnContext.findRenderObject() as RenderBox?;
     final origin =
         box != null ? box.localToGlobal(Offset.zero) & box.size : null;
     try {
-      await Share.share(bill.summaryText(), sharePositionOrigin: origin);
+      await Share.share(text, sharePositionOrigin: origin);
     } catch (_) {
-      await _copy();
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      _snack('تم نسخ النص');
     }
+  }
+
+  Future<void> _showCard() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => _CardDialog(bill: bill),
+    );
   }
 
   Future<String?> _askText(String title, String label,
@@ -525,7 +475,7 @@ class _HomePageState extends State<HomePage> {
                   for (final p in bill.people)
                     InputChip(
                       label: Text(p.name),
-                      onDeleted: () => _removePerson(p),
+                      onDeleted: () => bill.removePerson(p),
                     ),
                   ActionChip(
                     avatar: const Icon(Icons.person_add_alt_1, size: 18),
@@ -561,10 +511,26 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               ),
+              _section('تقريب المبلغ لكل شخص'),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<double>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(value: 0, label: Text('بدون')),
+                    ButtonSegment(value: 0.5, label: Text('0.5')),
+                    ButtonSegment(value: 1, label: Text('1')),
+                  ],
+                  selected: {bill.roundStep},
+                  onSelectionChanged: (s) => bill.setRound(s.first),
+                ),
+              ),
               _section('الحساب'),
               _resultsCard(context),
-              _section('المحفظة المشتركة'),
-              _walletCard(context),
+              if (bill.saved.isNotEmpty) ...[
+                _section('سجل الفواتير'),
+                _historyCard(context),
+              ],
             ],
           ),
         );
@@ -641,13 +607,23 @@ class _HomePageState extends State<HomePage> {
               const Text('أضف الأشخاص والبنود لتظهر النتيجة'),
             for (final p in bill.people)
               Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
+                padding: const EdgeInsets.symmetric(vertical: 2),
                 child: Row(
                   children: [
                     Expanded(child: Text(p.name)),
                     Text(
                       '${fmt(t[p.id] ?? 0)} $kCurrency',
                       style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Builder(
+                      builder: (btnContext) => IconButton(
+                        tooltip: 'أرسل له طلب الدفع',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.send, size: 20),
+                        onPressed: (t[p.id] ?? 0) > 0
+                            ? () => _shareText(btnContext, bill.requestText(p))
+                            : null,
+                      ),
                     ),
                   ],
                 ),
@@ -673,6 +649,15 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
               const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: bill.grandTotal > 0 ? _showCard : null,
+                  icon: const Icon(Icons.image_outlined),
+                  label: const Text('بطاقة الحساب (صورة للمشاركة)'),
+                ),
+              ),
+              const SizedBox(height: 8),
               Row(
                 children: [
                   Expanded(
@@ -684,13 +669,21 @@ class _HomePageState extends State<HomePage> {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    flex: 2,
                     child: Builder(
-                      builder: (btnContext) => FilledButton.icon(
-                        onPressed: () => _share(btnContext),
+                      builder: (btnContext) => OutlinedButton.icon(
+                        onPressed: () =>
+                            _shareText(btnContext, bill.summaryText()),
                         icon: const Icon(Icons.share),
-                        label: const Text('شارك الملخص'),
+                        label: const Text('نص'),
                       ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: bill.items.isNotEmpty ? _saveBill : null,
+                      icon: const Icon(Icons.bookmark_add_outlined),
+                      label: const Text('احفظ'),
                     ),
                   ),
                 ],
@@ -702,96 +695,219 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _walletCard(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final total = bill.grandTotal;
-    final balance = bill.walletBalance;
-    final enough = balance + 0.005 >= total;
-    final canPay =
-        bill.items.isNotEmpty && bill.unassignedCount == 0 && total > 0 && enough;
-
+  Widget _historyCard(BuildContext context) {
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+      child: Column(
+        children: [
+          for (final b in bill.saved)
+            ExpansionTile(
+              title: Text(b.title),
+              subtitle: Text('${fmtDate(b.date)} · ${fmt(b.total)} $kCurrency'),
+              childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               children: [
-                const Expanded(child: Text('رصيد المحفظة')),
-                Text(
-                  '${fmt(balance)} $kCurrency',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
+                for (final e in b.lines.entries)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        Expanded(child: Text(e.key)),
+                        Text('${fmt(e.value)} $kCurrency'),
+                      ],
+                    ),
+                  ),
+                Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: TextButton.icon(
+                    onPressed: () => bill.deleteSaved(b),
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('حذف'),
+                  ),
                 ),
               ],
             ),
-            if (bill.people.isNotEmpty) const Divider(),
-            for (final p in bill.people)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(p.name)),
-                    Builder(builder: (_) {
-                      final b = bill.personBalance(p.id);
-                      final neg = b < -0.005;
-                      return Text(
-                        neg ? 'عليه ${fmt(-b)} $kCurrency' : 'له ${fmt(b)} $kCurrency',
-                        style: TextStyle(color: neg ? cs.error : null),
-                      );
-                    }),
-                  ],
+        ],
+      ),
+    );
+  }
+}
+
+// ───────────────────── بطاقة الحساب (صورة) ─────────────────────
+
+class _CardDialog extends StatefulWidget {
+  const _CardDialog({required this.bill});
+  final Bill bill;
+
+  @override
+  State<_CardDialog> createState() => _CardDialogState();
+}
+
+class _CardDialogState extends State<_CardDialog> {
+  final GlobalKey _boundaryKey = GlobalKey();
+  bool _busy = false;
+
+  Future<void> _share(BuildContext btnContext) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final box = btnContext.findRenderObject() as RenderBox?;
+    final origin =
+        box != null ? box.localToGlobal(Offset.zero) & box.size : null;
+    try {
+      final boundary = _boundaryKey.currentContext!.findRenderObject()
+          as RenderRepaintBoundary;
+      final image = await boundary.toImage(pixelRatio: 3);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/qassimha_bill.png');
+      await file.writeAsBytes(data!.buffer.asUint8List());
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'image/png')],
+        text: kTagline,
+        sharePositionOrigin: origin,
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذّرت مشاركة الصورة، جرّب مشاركة النص')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bill = widget.bill;
+    final t = bill.totals;
+    final rows = [
+      for (final p in bill.people)
+        if ((t[p.id] ?? 0) > 0) MapEntry(p.name, t[p.id]!),
+    ];
+    const green = Color(0xFF0E7C66);
+    const ink = Color(0xFF16302B);
+
+    return Dialog(
+      insetPadding: const EdgeInsets.all(16),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: SingleChildScrollView(
+                child: RepaintBoundary(
+                  key: _boundaryKey,
+                  child: Container(
+                    color: const Color(0xFFF4FBF8),
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text(
+                          '🧾 حساب الجلسة',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: green,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          fmtDate(DateTime.now()),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.black54),
+                        ),
+                        const SizedBox(height: 16),
+                        for (final r in rows)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    r.key,
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      color: ink,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  '${fmt(r.value)} $kCurrency',
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: ink,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const Divider(height: 24, color: green),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'الإجمالي',
+                                style: TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: ink,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              '${fmt(bill.grandTotal)} $kCurrency',
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: green,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
+                        const Text(
+                          kTagline,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.black45),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
+            ),
             const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _deposit,
-                    icon: const Icon(Icons.add),
-                    label: const Text('إيداع'),
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('إغلاق'),
                   ),
                 ),
-                const SizedBox(width: 8),
                 Expanded(
                   flex: 2,
-                  child: FilledButton.icon(
-                    onPressed: canPay ? _payFromWallet : null,
-                    icon: const Icon(Icons.account_balance_wallet),
-                    label: const Text('ادفع الفاتورة'),
+                  child: Builder(
+                    builder: (btnContext) => FilledButton.icon(
+                      onPressed: _busy ? null : () => _share(btnContext),
+                      icon: const Icon(Icons.share),
+                      label: Text(_busy ? '...' : 'شارك الصورة'),
+                    ),
                   ),
                 ),
               ],
             ),
-            if (bill.items.isNotEmpty && total > 0 && !enough)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'رصيد المحفظة لا يكفي، ينقص ${fmt(total - balance)} $kCurrency',
-                  style: TextStyle(color: cs.error),
-                ),
-              ),
-            if (bill.history.isNotEmpty)
-              ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                title: Text('سجل الدفعات (${bill.history.length})'),
-                children: [
-                  for (final h in bill.history)
-                    ListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      title: Text(h.title),
-                      subtitle: Text(fmtDate(h.date)),
-                      trailing: Text('${fmt(h.total)} $kCurrency'),
-                    ),
-                ],
-              ),
           ],
         ),
       ),
     );
   }
 }
+
+// يمنع تحذير الاستيراد غير المستخدم لو تغيّر الكود لاحقاً.
+// ignore: unused_element
+double _unusedMax(double a, double b) => math.max(a, b);
