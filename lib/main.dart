@@ -1123,9 +1123,9 @@ List<ScanRow> parseReceipt(List<String> lines) {
 
 final RegExp _totalKeyRe = RegExp(r'total|amount due|grand', caseSensitive: false);
 final RegExp _subTotalRe = RegExp(r'sub\s*-?\s*total', caseSensitive: false);
+final RegExp _dateRe = RegExp(r'\d{1,4}[-.]\d{1,2}[-.]\d{1,4}');
 
-/// يخمّن إجمالي الفاتورة: من سطر فيه «Total»، وإلا أكبر رقم تكرر مرتين
-/// (المطلوب والمدفوع مثلاً).
+/// يخمّن إجمالي الفاتورة: من سطر فيه «Total»، وإلا أكبر رقم معقول.
 double? guessTotal(List<String> lines) {
   final keyed = <double>[];
   for (var i = 0; i < lines.length; i++) {
@@ -1141,21 +1141,29 @@ double? guessTotal(List<String> lines) {
   }
   if (keyed.isNotEmpty) return keyed.reduce(math.max);
 
+  // لا يوجد سطر «Total»: نأخذ أكبر رقم معقول، ونستبعد ما يشبه رقم الطلب
+  // (رقم طويل بلا كسور ظهر مرة واحدة) وأسطر التواريخ.
   final count = <double, int>{};
+  final plain = <double, bool>{};
   for (final line in lines) {
-    if (line.contains(':') || line.contains('/')) continue;
+    if (line.contains(':') || line.contains('/') || _dateRe.hasMatch(line)) {
+      continue;
+    }
     for (final m in _numRe.allMatches(line)) {
-      final v = _toDouble(m.group(0)!);
+      final token = m.group(0)!;
+      final v = _toDouble(token);
       if (v != null && v >= 10 && v < 10000000) {
         count[v] = (count[v] ?? 0) + 1;
+        if (RegExp(r'^\d+$').hasMatch(token)) plain[v] = true;
       }
     }
   }
-  double? best;
-  for (final e in count.entries) {
-    if (e.value >= 2 && (best == null || e.key > best)) best = e.key;
+  final sorted = count.keys.toList()..sort((a, b) => b.compareTo(a));
+  for (final v in sorted) {
+    final looksLikeId = (plain[v] ?? false) && v >= 10000 && count[v] == 1;
+    if (!looksLikeId) return v;
   }
-  return best;
+  return null;
 }
 
 class _ScanReviewDialog extends StatefulWidget {
