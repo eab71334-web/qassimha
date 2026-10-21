@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -225,6 +226,25 @@ class _HomePageState extends State<HomePage> {
     bill.addItem(name.isEmpty ? 'بند' : name, price);
   }
 
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: bill.summaryText()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('تم نسخ الملخص')),
+    );
+  }
+
+  Future<void> _share(BuildContext btnContext) async {
+    final box = btnContext.findRenderObject() as RenderBox?;
+    final origin =
+        box != null ? box.localToGlobal(Offset.zero) & box.size : null;
+    try {
+      await Share.share(bill.summaryText(), sharePositionOrigin: origin);
+    } catch (_) {
+      await _copy();
+    }
+  }
+
   Future<String?> _askText(String title, String label) {
     final c = TextEditingController();
     return showDialog<String>(
@@ -419,13 +439,27 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
               const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: () => Share.share(bill.summaryText()),
-                  icon: const Icon(Icons.share),
-                  label: const Text('شارك الملخص'),
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _copy,
+                      icon: const Icon(Icons.copy),
+                      label: const Text('نسخ'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 2,
+                    child: Builder(
+                      builder: (btnContext) => FilledButton.icon(
+                        onPressed: () => _share(btnContext),
+                        icon: const Icon(Icons.share),
+                        label: const Text('شارك الملخص'),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ],
