@@ -423,6 +423,7 @@ class _HomePageState extends State<HomePage> {
     if (source == null) return;
 
     List<ScanRow>? rows;
+    double? totalGuess;
     var progressShown = false;
     try {
       final picked =
@@ -439,10 +440,12 @@ class _HomePageState extends State<HomePage> {
       try {
         final result =
             await recognizer.processImage(InputImage.fromFilePath(picked.path));
-        rows = parseReceipt([
+        final lines = [
           for (final b in result.blocks)
             for (final l in b.lines) l.text
-        ]);
+        ];
+        rows = parseReceipt(lines);
+        totalGuess = guessTotal(lines);
       } finally {
         await recognizer.close();
       }
@@ -457,13 +460,13 @@ class _HomePageState extends State<HomePage> {
       _snack('تعذّرت قراءة الصورة، جرّب صورة أوضح');
       return;
     }
-    if (found.isEmpty) {
+    if (found.isEmpty && totalGuess == null) {
       _snack('لم أجد أسعاراً واضحة، جرّب صورة أوضح أو أضف البنود يدوياً');
       return;
     }
     final accepted = await showDialog<List<ScanRow>>(
       context: context,
-      builder: (_) => _ScanReviewDialog(rows: found),
+      builder: (_) => _ScanReviewDialog(rows: found, total: totalGuess),
     );
     if (accepted == null || accepted.isEmpty) return;
     for (final r in accepted) {
@@ -1094,8 +1097,17 @@ List<ScanRow> parseReceipt(List<String> lines) {
       continue;
     }
     final m = matches.last;
-    final price = _toDouble(m.group(0)!);
+    final token = m.group(0)!;
+    final price = _toDouble(token);
     if (price == null || price <= 0 || price >= 100000) continue;
+    final hasDecimal =
+        token.contains('.') || RegExp(r',\d{1,2}$').hasMatch(token);
+    if (!hasDecimal) {
+      // رقم طويل بلا كسور: غالباً رقم طلب أو هاتف
+      if (token.length >= 5 && !token.contains(',')) continue;
+      // رقم صغير بلا كسور: غالباً كمية
+      if (price < 10) continue;
+    }
     var name = line
         .substring(0, m.start)
         .replaceAll(RegExp(r'[\s.,:*×=_\-]+$'), '')
@@ -1109,9 +1121,47 @@ List<ScanRow> parseReceipt(List<String> lines) {
   return rows;
 }
 
+final RegExp _totalKeyRe = RegExp(r'total|amount due|grand', caseSensitive: false);
+final RegExp _subTotalRe = RegExp(r'sub\s*-?\s*total', caseSensitive: false);
+
+/// يخمّن إجمالي الفاتورة: من سطر فيه «Total»، وإلا أكبر رقم تكرر مرتين
+/// (المطلوب والمدفوع مثلاً).
+double? guessTotal(List<String> lines) {
+  final keyed = <double>[];
+  for (var i = 0; i < lines.length; i++) {
+    final line = lines[i];
+    if (!_totalKeyRe.hasMatch(line) || _subTotalRe.hasMatch(line)) continue;
+    var ms = _numRe.allMatches(line).toList();
+    if (ms.isEmpty && i + 1 < lines.length) {
+      ms = _numRe.allMatches(lines[i + 1]).toList();
+    }
+    if (ms.isEmpty) continue;
+    final v = _toDouble(ms.last.group(0)!);
+    if (v != null && v > 0 && v < 10000000) keyed.add(v);
+  }
+  if (keyed.isNotEmpty) return keyed.reduce(math.max);
+
+  final count = <double, int>{};
+  for (final line in lines) {
+    if (line.contains(':') || line.contains('/')) continue;
+    for (final m in _numRe.allMatches(line)) {
+      final v = _toDouble(m.group(0)!);
+      if (v != null && v >= 10 && v < 10000000) {
+        count[v] = (count[v] ?? 0) + 1;
+      }
+    }
+  }
+  double? best;
+  for (final e in count.entries) {
+    if (e.value >= 2 && (best == null || e.key > best)) best = e.key;
+  }
+  return best;
+}
+
 class _ScanReviewDialog extends StatefulWidget {
-  const _ScanReviewDialog({required this.rows});
+  const _ScanReviewDialog({required this.rows, this.total});
   final List<ScanRow> rows;
+  final double? total;
 
   @override
   State<_ScanReviewDialog> createState() => _ScanReviewDialogState();
@@ -1135,6 +1185,24 @@ class _ScanReviewDialogState extends State<_ScanReviewDialog> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  double get _sum {
+    var s = 0.0;
+    for (var i = 0; i < widget.rows.length; i++) {
+      if (!_on[i]) continue;
+      final p = parsePrice(_prices[i].text);
+      if (p != null && p > 0) s += p;
+    }
+    return s;
+  }
+
+  void _setAll(bool v) {
+    setState(() {
+      for (var i = 0; i < _on.length; i++) {
+        _on[i] = v;
+      }
+    });
   }
 
   void _confirm() {
@@ -1164,6 +1232,46 @@ class _ScanReviewDialogState extends State<_ScanReviewDialog> {
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 8),
+          if (widget.total != null)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'الإجمالي المقترح: ${fmt(widget.total!)} $kCurrency',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    FilledButton.tonal(
+                      onPressed: () => Navigator.pop(
+                        context,
+                        [ScanRow('الفاتورة', widget.total!)],
+                      ),
+                      child: const Text('قسّم الإجمالي فقط'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          Row(
+            children: [
+              TextButton(
+                onPressed: () => _setAll(true),
+                child: const Text('تحديد الكل'),
+              ),
+              TextButton(
+                onPressed: () => _setAll(false),
+                child: const Text('إلغاء الكل'),
+              ),
+            ],
+          ),
+          Text(
+            'مجموع المحدد: ${fmt(_sum)} $kCurrency',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
           for (var i = 0; i < widget.rows.length; i++)
             Row(
               children: [
@@ -1184,6 +1292,7 @@ class _ScanReviewDialogState extends State<_ScanReviewDialog> {
                     controller: _prices[i],
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
+                    onChanged: (_) => setState(() {}),
                     decoration: const InputDecoration(isDense: true),
                   ),
                 ),
