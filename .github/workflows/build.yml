@@ -30,19 +30,36 @@ jobs:
         run: sed -i 's/android:label="[^"]*"/android:label="قسّمها"/' android/app/src/main/AndroidManifest.xml
 
       - run: flutter pub get
-      - name: Build APK
+
+      - name: Generate app icon
+        continue-on-error: true
+        run: dart run flutter_launcher_icons
+
+      - name: Build APK (release)
+        id: release
+        continue-on-error: true
         run: |
           set -o pipefail
           flutter build apk --release --no-shrink 2>&1 | tee build.log
 
       - name: Show Android errors
-        if: failure()
-        run: grep -n -E -B3 -A8 "What went wrong|Missing class|error:|Execution failed" build.log | head -120 || true
+        if: steps.release.outcome == 'failure'
+        run: |
+          {
+            echo '### Android release build failed'
+            echo '```'
+            grep -n -E -A3 "Caused by|Missing class|What went wrong|Execution failed|CompilationFailed|error:" build.log | head -80 || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build APK (debug fallback)
+        if: steps.release.outcome == 'failure'
+        run: flutter build apk --debug
 
       - uses: actions/upload-artifact@v4
         with:
           name: qassimha-android-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/*.apk
 
   ios:
     runs-on: macos-latest
@@ -68,6 +85,11 @@ jobs:
           sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g" ios/Runner.xcodeproj/project.pbxproj
 
       - run: flutter pub get
+
+      - name: Generate app icon
+        continue-on-error: true
+        run: dart run flutter_launcher_icons
+
       - run: flutter build ios --release --no-codesign
 
       - name: Package unsigned IPA
