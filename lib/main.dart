@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -156,6 +158,12 @@ class Bill extends ChangeNotifier {
   String summaryText() {
     final t = totals;
     final buf = StringBuffer('🧾 قسّمها\n');
+    for (final i in items) {
+      if (i.eaters.isNotEmpty) {
+        buf.writeln('▫️ ${i.name}: ${fmt(i.price)} $kCurrency');
+      }
+    }
+    if (items.isNotEmpty) buf.writeln('────────');
     for (final p in people) {
       buf.writeln('• ${p.name}: ${fmt(t[p.id] ?? 0)} $kCurrency');
     }
@@ -387,6 +395,84 @@ class _HomePageState extends State<HomePage> {
     bill.addItem(name.isEmpty ? 'بند' : name, price);
   }
 
+  Future<void> _scanBill() async {
+    if (bill.people.isEmpty) {
+      _snack('أضف الأشخاص أولاً');
+      return;
+    }
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera),
+              title: const Text('التقط صورة للفاتورة'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('اختر من الصور'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+
+    List<ScanRow>? rows;
+    var progressShown = false;
+    try {
+      final picked =
+          await ImagePicker().pickImage(source: source, imageQuality: 90);
+      if (picked == null) return;
+      if (!mounted) return;
+      progressShown = true;
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      try {
+        final result =
+            await recognizer.processImage(InputImage.fromFilePath(picked.path));
+        rows = parseReceipt([
+          for (final b in result.blocks)
+            for (final l in b.lines) l.text
+        ]);
+      } finally {
+        await recognizer.close();
+      }
+    } catch (_) {
+      rows = null;
+    } finally {
+      if (progressShown && mounted) Navigator.of(context).pop();
+    }
+    if (!mounted) return;
+    final found = rows;
+    if (found == null) {
+      _snack('تعذّرت قراءة الصورة، جرّب صورة أوضح');
+      return;
+    }
+    if (found.isEmpty) {
+      _snack('لم أجد أسعاراً واضحة، جرّب صورة أوضح أو أضف البنود يدوياً');
+      return;
+    }
+    final accepted = await showDialog<List<ScanRow>>(
+      context: context,
+      builder: (_) => _ScanReviewDialog(rows: found),
+    );
+    if (accepted == null || accepted.isEmpty) return;
+    for (final r in accepted) {
+      bill.addItem(r.name, r.price);
+    }
+    if (!mounted) return;
+    _snack('أُضيف ${accepted.length} بند من الفاتورة');
+  }
+
   Future<void> _saveBill() async {
     final title = await _askText(
       'حفظ الفاتورة',
@@ -485,6 +571,12 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               _section('البنود'),
+              OutlinedButton.icon(
+                onPressed: _scanBill,
+                icon: const Icon(Icons.document_scanner_outlined),
+                label: const Text('امسح فاتورة بالكاميرا'),
+              ),
+              const SizedBox(height: 8),
               if (bill.items.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
@@ -820,6 +912,56 @@ class _CardDialogState extends State<_CardDialog> {
                           style: const TextStyle(color: Colors.black54),
                         ),
                         const SizedBox(height: 16),
+                        if (bill.items.any((i) => i.eaters.isNotEmpty)) ...[
+                          const Text(
+                            'ما تم تقسيمه',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: green,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          for (final i in bill.items)
+                            if (i.eaters.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 2),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        i.name,
+                                        style: const TextStyle(
+                                          color: Colors.black87,
+                                        ),
+                                      ),
+                                    ),
+                                    Text(
+                                      '${fmt(i.price)} $kCurrency',
+                                      style: const TextStyle(
+                                        color: Colors.black54,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          if (bill.extraPercent > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                '+ خدمة / بقشيش ${bill.extraPercent.round()}%',
+                                style: const TextStyle(color: Colors.black54),
+                              ),
+                            ),
+                          const Divider(height: 24),
+                          const Text(
+                            'حصة كل شخص',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: green,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                        ],
                         for (final r in rows)
                           Padding(
                             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -904,6 +1046,161 @@ class _CardDialogState extends State<_CardDialog> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ───────────────────── مسح الفاتورة بالكاميرا ─────────────────────
+
+class ScanRow {
+  ScanRow(this.name, this.price);
+  String name;
+  double price;
+}
+
+final RegExp _numRe =
+    RegExp(r'\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?');
+final RegExp _skipRe = RegExp(
+  r'total|subtotal|tax|vat|change|cash|balance|amount|visa|master|card|tel|phone|mob|date|time|invoice|receipt|tip|discount|qty',
+  caseSensitive: false,
+);
+
+double? _toDouble(String t) {
+  var s = t;
+  if (s.contains(',') && s.contains('.')) {
+    s = s.replaceAll(',', '');
+  } else if (RegExp(r'^\d{1,3}(,\d{3})+$').hasMatch(s)) {
+    s = s.replaceAll(',', '');
+  } else {
+    s = s.replaceAll(',', '.');
+  }
+  return double.tryParse(s);
+}
+
+/// يستخرج البنود المحتملة (اسم + سعر) من أسطر النص المقروء.
+List<ScanRow> parseReceipt(List<String> lines) {
+  final rows = <ScanRow>[];
+  var lastText = '';
+  for (final raw in lines) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    final matches = _numRe.allMatches(line).toList();
+    if (matches.isEmpty) {
+      lastText = line;
+      continue;
+    }
+    if (_skipRe.hasMatch(line) || line.contains(':') || line.contains('/')) {
+      lastText = '';
+      continue;
+    }
+    final m = matches.last;
+    final price = _toDouble(m.group(0)!);
+    if (price == null || price <= 0 || price >= 100000) continue;
+    var name = line
+        .substring(0, m.start)
+        .replaceAll(RegExp(r'[\s.,:*×=_\-]+$'), '')
+        .trim();
+    if (name.isEmpty || !RegExp(r'[A-Za-z؀-ۿ]').hasMatch(name)) {
+      name = lastText;
+    }
+    lastText = '';
+    rows.add(ScanRow(name.isEmpty ? 'بند ${rows.length + 1}' : name, price));
+  }
+  return rows;
+}
+
+class _ScanReviewDialog extends StatefulWidget {
+  const _ScanReviewDialog({required this.rows});
+  final List<ScanRow> rows;
+
+  @override
+  State<_ScanReviewDialog> createState() => _ScanReviewDialogState();
+}
+
+class _ScanReviewDialogState extends State<_ScanReviewDialog> {
+  late final List<bool> _on = List<bool>.filled(widget.rows.length, true);
+  late final List<TextEditingController> _names = [
+    for (final r in widget.rows) TextEditingController(text: r.name)
+  ];
+  late final List<TextEditingController> _prices = [
+    for (final r in widget.rows) TextEditingController(text: fmt(r.price))
+  ];
+
+  @override
+  void dispose() {
+    for (final c in _names) {
+      c.dispose();
+    }
+    for (final c in _prices) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  void _confirm() {
+    final out = <ScanRow>[];
+    for (var i = 0; i < widget.rows.length; i++) {
+      if (!_on[i]) continue;
+      final p = parsePrice(_prices[i].text);
+      if (p == null || p <= 0) continue;
+      final n = _names[i].text.trim();
+      out.add(ScanRow(n.isEmpty ? 'بند' : n, p));
+    }
+    Navigator.pop(context, out);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      scrollable: true,
+      title: const Text('البنود التي وجدتها'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'القراءة قد لا تكون دقيقة، والأسماء العربية لا تُقرأ جيداً. '
+            'عدّل الأسماء والأسعار وألغِ ما لا يلزم.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          for (var i = 0; i < widget.rows.length; i++)
+            Row(
+              children: [
+                Checkbox(
+                  value: _on[i],
+                  onChanged: (v) => setState(() => _on[i] = v ?? false),
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _names[i],
+                    decoration: const InputDecoration(isDense: true),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 80,
+                  child: TextField(
+                    controller: _prices[i],
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('إلغاء'),
+        ),
+        FilledButton(
+          onPressed: _confirm,
+          child: const Text('أضف المحدد'),
+        ),
+      ],
     );
   }
 }
