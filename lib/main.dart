@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() => runApp(const QassimhaApp());
 
@@ -23,25 +26,61 @@ class Item {
   Set<String> eaters;
 }
 
+/// دفعة خرجت من المحفظة (فاتورة مدفوعة).
+class Payment {
+  Payment(this.title, this.total, this.date, this.shares);
+  final String title;
+  final double total;
+  final DateTime date;
+  final Map<String, double> shares;
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'total': total,
+        'date': date.toIso8601String(),
+        'shares': shares,
+      };
+
+  factory Payment.fromJson(Map<String, dynamic> j) => Payment(
+        j['title'] as String,
+        (j['total'] as num).toDouble(),
+        DateTime.parse(j['date'] as String),
+        (j['shares'] as Map).map(
+          (k, v) => MapEntry(k as String, (v as num).toDouble()),
+        ),
+      );
+}
+
 class Bill extends ChangeNotifier {
   final List<Person> people = [];
   final List<Item> items = [];
+  final Map<String, double> deposits = {}; // مجموع ما أودعه كل شخص
+  final List<Payment> history = [];
   double extraPercent = 0; // خدمة / ضريبة / بقشيش
   int _seq = 0;
 
   String _id() => '${_seq++}';
+
+  // ── الأشخاص والبنود ──
 
   void addPerson(String name) {
     people.add(Person(_id(), name));
     notifyListeners();
   }
 
-  void removePerson(Person p) {
+  bool hasMoney(Person p) =>
+      (deposits[p.id] ?? 0) != 0 ||
+      history.any((h) => h.shares.containsKey(p.id));
+
+  /// يرجع false إذا للشخص حركة مالية في المحفظة فلا يُحذف.
+  bool removePerson(Person p) {
+    if (hasMoney(p)) return false;
     people.remove(p);
     for (final i in items) {
       i.eaters.remove(p.id);
     }
     notifyListeners();
+    return true;
   }
 
   void addItem(String name, double price) {
@@ -68,7 +107,7 @@ class Bill extends ChangeNotifier {
 
   int get unassignedCount => items.where((i) => i.eaters.isEmpty).length;
 
-  /// نصيب كل شخص (بعد إضافة النسبة الإضافية).
+  /// نصيب كل شخص من الفاتورة الحالية (بعد إضافة النسبة الإضافية).
   Map<String, double> get totals {
     final result = {for (final p in people) p.id: 0.0};
     final factor = 1 + extraPercent / 100;
@@ -84,6 +123,33 @@ class Bill extends ChangeNotifier {
 
   double get grandTotal => totals.values.fold(0.0, (a, b) => a + b);
 
+  // ── المحفظة المشتركة ──
+
+  double get walletBalance =>
+      deposits.values.fold(0.0, (a, b) => a + b) -
+      history.fold(0.0, (a, p) => a + p.total);
+
+  /// رصيد الشخص: ما أودعه ناقص حصصه من الفواتير المدفوعة.
+  double personBalance(String id) =>
+      (deposits[id] ?? 0) -
+      history.fold(0.0, (a, p) => a + (p.shares[id] ?? 0));
+
+  void deposit(String personId, double amount) {
+    deposits[personId] = (deposits[personId] ?? 0) + amount;
+    notifyListeners();
+  }
+
+  /// يدفع الفاتورة الحالية من المحفظة ويسجّلها ويفرّغ البنود.
+  void payFromWallet(String title) {
+    final shares = Map<String, double>.of(totals)
+      ..removeWhere((_, v) => v == 0);
+    history.insert(0, Payment(title, grandTotal, DateTime.now(), shares));
+    items.clear();
+    notifyListeners();
+  }
+
+  // ── الملخص ──
+
   String summaryText() {
     final t = totals;
     final buf = StringBuffer('🧾 قسّمها\n');
@@ -94,9 +160,90 @@ class Bill extends ChangeNotifier {
     buf.writeln('الإجمالي: ${fmt(grandTotal)} $kCurrency');
     return buf.toString();
   }
+
+  // ── الحفظ على الجهاز ──
+
+  static const _key = 'qassimha_bill_v1';
+
+  Map<String, dynamic> toJson() => {
+        'seq': _seq,
+        'extra': extraPercent,
+        'people': [
+          for (final p in people) {'id': p.id, 'name': p.name}
+        ],
+        'items': [
+          for (final i in items)
+            {
+              'id': i.id,
+              'name': i.name,
+              'price': i.price,
+              'eaters': i.eaters.toList(),
+            }
+        ],
+        'deposits': deposits,
+        'history': [for (final h in history) h.toJson()],
+      };
+
+  Future<void> load() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final s = sp.getString(_key);
+      if (s == null) return;
+      final m = jsonDecode(s) as Map<String, dynamic>;
+      _seq = (m['seq'] as num?)?.toInt() ?? 0;
+      extraPercent = (m['extra'] as num?)?.toDouble() ?? 0;
+      people
+        ..clear()
+        ..addAll([
+          for (final p in (m['people'] as List? ?? []))
+            Person(p['id'] as String, p['name'] as String)
+        ]);
+      items
+        ..clear()
+        ..addAll([
+          for (final i in (m['items'] as List? ?? []))
+            Item(
+              i['id'] as String,
+              i['name'] as String,
+              (i['price'] as num).toDouble(),
+              Set<String>.from(i['eaters'] as List),
+            )
+        ]);
+      deposits
+        ..clear()
+        ..addAll((m['deposits'] as Map? ?? {}).map(
+          (k, v) => MapEntry(k as String, (v as num).toDouble()),
+        ));
+      history
+        ..clear()
+        ..addAll([
+          for (final h in (m['history'] as List? ?? []))
+            Payment.fromJson(Map<String, dynamic>.from(h as Map))
+        ]);
+      super.notifyListeners();
+    } catch (_) {
+      // بيانات تالفة: نبدأ من جديد
+    }
+  }
+
+  Future<void> _save() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_key, jsonEncode(toJson()));
+    } catch (_) {}
+  }
+
+  @override
+  void notifyListeners() {
+    super.notifyListeners();
+    _save();
+  }
 }
 
 String fmt(double v) => v.toStringAsFixed(2);
+
+String fmtDate(DateTime d) =>
+    '${d.year}/${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}';
 
 /// يحوّل الأرقام العربية والفاصلة العربية ثم يقرأ الرقم.
 double? parsePrice(String s) {
@@ -158,9 +305,19 @@ class _HomePageState extends State<HomePage> {
   final Bill bill = Bill();
 
   @override
+  void initState() {
+    super.initState();
+    bill.load();
+  }
+
+  @override
   void dispose() {
     bill.dispose();
     super.dispose();
+  }
+
+  void _snack(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
   Future<void> _addPerson() async {
@@ -168,11 +325,15 @@ class _HomePageState extends State<HomePage> {
     if (name != null && name.isNotEmpty) bill.addPerson(name);
   }
 
+  void _removePerson(Person p) {
+    if (!bill.removePerson(p)) {
+      _snack('لا يمكن حذف شخص لديه حركة في المحفظة');
+    }
+  }
+
   Future<void> _addItem() async {
     if (bill.people.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('أضف الأشخاص أولاً')),
-      );
+      _snack('أضف الأشخاص أولاً');
       return;
     }
     final nameCtrl = TextEditingController();
@@ -218,20 +379,89 @@ class _HomePageState extends State<HomePage> {
     final name = nameCtrl.text.trim();
     if (price == null || price <= 0) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('السعر غير صحيح')),
-      );
+      _snack('السعر غير صحيح');
       return;
     }
     bill.addItem(name.isEmpty ? 'بند' : name, price);
   }
 
+  Future<void> _deposit() async {
+    if (bill.people.isEmpty) {
+      _snack('أضف الأشخاص أولاً');
+      return;
+    }
+    String personId = bill.people.first.id;
+    final amountCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSt) => AlertDialog(
+          title: const Text('إيداع في المحفظة'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButton<String>(
+                isExpanded: true,
+                value: personId,
+                items: [
+                  for (final p in bill.people)
+                    DropdownMenuItem(value: p.id, child: Text(p.name)),
+                ],
+                onChanged: (v) {
+                  if (v != null) setSt(() => personId = v);
+                },
+              ),
+              TextField(
+                controller: amountCtrl,
+                autofocus: true,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'المبلغ',
+                  suffixText: kCurrency,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('إلغاء'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('إيداع'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    final amount = parsePrice(amountCtrl.text);
+    if (amount == null || amount <= 0) {
+      if (!mounted) return;
+      _snack('المبلغ غير صحيح');
+      return;
+    }
+    bill.deposit(personId, amount);
+  }
+
+  Future<void> _payFromWallet() async {
+    final title = await _askText(
+      'دفع الفاتورة من المحفظة',
+      'اسم الفاتورة (مثال: عشاء الخميس)',
+      confirm: 'ادفع',
+    );
+    if (title == null) return;
+    bill.payFromWallet(title.isEmpty ? 'فاتورة' : title);
+    if (!mounted) return;
+    _snack('تم الدفع من المحفظة');
+  }
+
   Future<void> _copy() async {
     await Clipboard.setData(ClipboardData(text: bill.summaryText()));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم نسخ الملخص')),
-    );
+    _snack('تم نسخ الملخص');
   }
 
   Future<void> _share(BuildContext btnContext) async {
@@ -245,7 +475,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<String?> _askText(String title, String label) {
+  Future<String?> _askText(String title, String label,
+      {String confirm = 'إضافة'}) {
     final c = TextEditingController();
     return showDialog<String>(
       context: context,
@@ -264,7 +495,7 @@ class _HomePageState extends State<HomePage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, c.text.trim()),
-            child: const Text('إضافة'),
+            child: Text(confirm),
           ),
         ],
       ),
@@ -294,7 +525,7 @@ class _HomePageState extends State<HomePage> {
                   for (final p in bill.people)
                     InputChip(
                       label: Text(p.name),
-                      onDeleted: () => bill.removePerson(p),
+                      onDeleted: () => _removePerson(p),
                     ),
                   ActionChip(
                     avatar: const Icon(Icons.person_add_alt_1, size: 18),
@@ -307,7 +538,8 @@ class _HomePageState extends State<HomePage> {
               if (bill.items.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Text('لا توجد بنود بعد. اضغط «بند جديد» وأدخل ما أُكل أو اشتُري.'),
+                  child: Text(
+                      'لا توجد بنود بعد. اضغط «بند جديد» وأدخل ما أُكل أو اشتُري.'),
                 ),
               for (final item in bill.items) _itemCard(item),
               _section('خدمة / ضريبة / بقشيش'),
@@ -331,6 +563,8 @@ class _HomePageState extends State<HomePage> {
               ),
               _section('الحساب'),
               _resultsCard(context),
+              _section('المحفظة المشتركة'),
+              _walletCard(context),
             ],
           ),
         );
@@ -462,6 +696,99 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _walletCard(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final total = bill.grandTotal;
+    final balance = bill.walletBalance;
+    final enough = balance + 0.005 >= total;
+    final canPay =
+        bill.items.isNotEmpty && bill.unassignedCount == 0 && total > 0 && enough;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(child: Text('رصيد المحفظة')),
+                Text(
+                  '${fmt(balance)} $kCurrency',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ],
+            ),
+            if (bill.people.isNotEmpty) const Divider(),
+            for (final p in bill.people)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(p.name)),
+                    Builder(builder: (_) {
+                      final b = bill.personBalance(p.id);
+                      final neg = b < -0.005;
+                      return Text(
+                        neg ? 'عليه ${fmt(-b)} $kCurrency' : 'له ${fmt(b)} $kCurrency',
+                        style: TextStyle(color: neg ? cs.error : null),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _deposit,
+                    icon: const Icon(Icons.add),
+                    label: const Text('إيداع'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: FilledButton.icon(
+                    onPressed: canPay ? _payFromWallet : null,
+                    icon: const Icon(Icons.account_balance_wallet),
+                    label: const Text('ادفع الفاتورة'),
+                  ),
+                ),
+              ],
+            ),
+            if (bill.items.isNotEmpty && total > 0 && !enough)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'رصيد المحفظة لا يكفي، ينقص ${fmt(total - balance)} $kCurrency',
+                  style: TextStyle(color: cs.error),
+                ),
+              ),
+            if (bill.history.isNotEmpty)
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: Text('سجل الدفعات (${bill.history.length})'),
+                children: [
+                  for (final h in bill.history)
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(h.title),
+                      subtitle: Text(fmtDate(h.date)),
+                      trailing: Text('${fmt(h.total)} $kCurrency'),
+                    ),
+                ],
+              ),
           ],
         ),
       ),
