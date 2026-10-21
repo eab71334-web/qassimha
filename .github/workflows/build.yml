@@ -53,7 +53,12 @@ jobs:
           rm -rf test
 
       - name: Set Arabic app name
-        run: /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName قسّمها" ios/Runner/Info.plist
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName قسّمها" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string نحتاج الكاميرا لقراءة الفاتورة" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string نحتاج الوصول للصور لقراءة الفاتورة" ios/Runner/Info.plist
+          sed -i '' "s/^#* *platform :ios, .*/platform :ios, '15.5'/" ios/Podfile
+          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g" ios/Runner.xcodeproj/project.pbxproj
 
       - run: flutter pub get
       - run: flutter build ios --release --no-codesign
