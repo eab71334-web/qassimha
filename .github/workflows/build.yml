@@ -26,6 +26,15 @@ jobs:
           flutter create . --project-name qassimha --org com.qassimha --platforms=android,ios
           rm -rf test
 
+      - name: Download OCR language data
+        run: |
+          mkdir -p assets/tessdata
+          for L in ara eng; do
+            curl -fsSL -o assets/tessdata/$L.traineddata "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$L.traineddata"
+          done
+          printf '{"files": ["ara.traineddata", "eng.traineddata"]}' > assets/tessdata_config.json
+          ls -la assets/tessdata
+
       - name: Set Arabic app name
         run: sed -i 's/android:label="[^"]*"/android:label="قسّمها"/' android/app/src/main/AndroidManifest.xml
 
@@ -37,7 +46,7 @@ jobs:
 
       - name: Add R8 rules for ML Kit
         run: |
-          printf '%s\n' '-dontwarn com.google.mlkit.vision.text.**' > android/app/proguard-rules.pro
+          printf '%s\n' '-dontwarn com.google.mlkit.vision.text.**' '-keep class com.googlecode.tesseract.android.** { *; }' '-keep class com.googlecode.leptonica.android.** { *; }' > android/app/proguard-rules.pro
           if [ -f android/app/build.gradle.kts ]; then
             sed -i 's|signingConfig = signingConfigs.getByName("debug")|&\n            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")|' android/app/build.gradle.kts
           else
@@ -86,6 +95,15 @@ jobs:
           flutter create . --project-name qassimha --org com.qassimha --platforms=android,ios
           rm -rf test
 
+      - name: Download OCR language data
+        run: |
+          mkdir -p assets/tessdata
+          for L in ara eng; do
+            curl -fsSL -o assets/tessdata/$L.traineddata "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$L.traineddata"
+          done
+          printf '{"files": ["ara.traineddata", "eng.traineddata"]}' > assets/tessdata_config.json
+          ls -la assets/tessdata
+
       - name: Set Arabic app name
         run: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName قسّمها" ios/Runner/Info.plist
@@ -106,6 +124,7 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/ios/iphoneos/Runner.app Payload/
+          cp -R assets/tessdata Payload/Runner.app/tessdata
           zip -r qassimha.ipa Payload
 
       - uses: actions/upload-artifact@v4
