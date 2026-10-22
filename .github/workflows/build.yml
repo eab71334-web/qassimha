@@ -36,7 +36,10 @@ jobs:
           ls -la assets/tessdata
 
       - name: Set Arabic app name
-        run: sed -i 's/android:label="[^"]*"/android:label="قسّمها"/' android/app/src/main/AndroidManifest.xml
+        run: |
+          sed -i 's/android:label="[^"]*"/android:label="قسّمها"/' android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<uses-permission android:name="android.permission.CAMERA"/>\n    <application|' android/app/src/main/AndroidManifest.xml
+          grep -n "CAMERA" android/app/src/main/AndroidManifest.xml || echo "WARNING: CAMERA permission was not added"
 
       - run: flutter pub get
 
@@ -111,6 +114,16 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string نحتاج الوصول للصور لقراءة الفاتورة" ios/Runner/Info.plist
           sed -i '' "s/^#* *platform :ios, .*/platform :ios, '15.5'/" ios/Podfile
           sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g" ios/Runner.xcodeproj/project.pbxproj
+          python3 - <<'PY'
+          p = 'ios/Podfile'
+          s = open(p).read()
+          needle = 'flutter_additional_ios_build_settings(target)'
+          add = needle + "\n    target.build_configurations.each do |config|\n      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)', 'PERMISSION_CAMERA=1']\n    end"
+          if needle in s and 'PERMISSION_CAMERA' not in s:
+              s = s.replace(needle, add, 1)
+          open(p, 'w').write(s)
+          print('PERMISSION_CAMERA' in s)
+          PY
 
       - run: flutter pub get
 
