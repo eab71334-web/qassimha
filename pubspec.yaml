@@ -17,6 +17,7 @@ dependencies:
   path_provider: ^2.1.0
   image_picker: ^1.1.0
   google_mlkit_text_recognition: ^0.13.0
+  flutter_tesseract_ocr: ^0.4.24
 
 dev_dependencies:
   flutter_test:
@@ -34,3 +35,6 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/tessdata/
+    - assets/tessdata_config.json
