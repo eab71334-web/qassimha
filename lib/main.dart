@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:cunning_document_scanner/cunning_document_scanner.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -401,21 +402,22 @@ class _HomePageState extends State<HomePage> {
       _snack('أضف الأشخاص أولاً');
       return;
     }
-    final source = await showModalBottomSheet<ImageSource>(
+    final source = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.photo_camera),
-              title: const Text('التقط صورة للفاتورة'),
-              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+              leading: const Icon(Icons.document_scanner_outlined),
+              title: const Text('مسح ضوئي للفاتورة (الأدق)'),
+              subtitle: const Text('يقصّ الورقة ويعدّل الصورة تلقائياً'),
+              onTap: () => Navigator.pop(ctx, 'scan'),
             ),
             ListTile(
               leading: const Icon(Icons.photo_library),
               title: const Text('اختر من الصور'),
-              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+              onTap: () => Navigator.pop(ctx, 'gallery'),
             ),
           ],
         ),
@@ -425,15 +427,23 @@ class _HomePageState extends State<HomePage> {
 
     List<ScanRow>? rows;
     double? totalGuess;
+    var mlLines = <String>[];
     var progressShown = false;
     try {
-      final picked =
-          await ImagePicker().pickImage(
-        source: source,
-        imageQuality: 90,
-        maxWidth: 1800,
-      );
-      if (picked == null) return;
+      String imagePath;
+      if (source == 'scan') {
+        final pics = await CunningDocumentScanner.getPictures(noOfPages: 1);
+        if (pics == null || pics.isEmpty) return;
+        imagePath = pics.first;
+      } else {
+        final picked = await ImagePicker().pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 90,
+          maxWidth: 1800,
+        );
+        if (picked == null) return;
+        imagePath = picked.path;
+      }
       if (!mounted) return;
       progressShown = true;
       showDialog<void>(
@@ -441,14 +451,16 @@ class _HomePageState extends State<HomePage> {
         barrierDismissible: false,
         builder: (_) => const Center(child: CircularProgressIndicator()),
       );
+      final path = await _downscale(imagePath);
       final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
       try {
         final result =
-            await recognizer.processImage(InputImage.fromFilePath(picked.path));
+            await recognizer.processImage(InputImage.fromFilePath(path));
         final lines = [
           for (final b in result.blocks)
             for (final l in b.lines) l.text
         ];
+        mlLines = lines;
         rows = parseReceipt(lines);
         totalGuess = guessTotal(lines);
       } finally {
@@ -457,14 +469,14 @@ class _HomePageState extends State<HomePage> {
       // قراءة عربية بـ Tesseract (تقرأ الأسماء العربية)؛ إن فشلت نكتفي بـ ML Kit
       try {
         final text = await FlutterTesseractOcr.extractText(
-          picked.path,
+          path,
           language: 'ara+eng',
-          args: {'psm': '4', 'preserve_interword_spaces': '1'},
+          args: {'psm': '4'},
         );
         final tl = text.split('\n');
         final tRows = parseTesseract(tl);
         if (tRows.isNotEmpty) rows = tRows;
-        totalGuess = guessTotal(tl) ?? totalGuess;
+        totalGuess = guessTotal([...mlLines, ...tl]) ?? totalGuess;
       } catch (_) {}
     } catch (_) {
       rows = null;
@@ -1072,6 +1084,32 @@ class _CardDialogState extends State<_CardDialog> {
 
 // ───────────────────── مسح الفاتورة بالكاميرا ─────────────────────
 
+/// يصغّر الصورة الكبيرة (مثل ناتج الماسح) لتسريع القراءة.
+Future<String> _downscale(String path, {int maxWidth = 1800}) async {
+  try {
+    final bytes = await File(path).readAsBytes();
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    final desc = await ui.ImageDescriptor.encoded(buffer);
+    if (desc.width <= maxWidth) {
+      desc.dispose();
+      buffer.dispose();
+      return path;
+    }
+    final codec = await desc.instantiateCodec(targetWidth: maxWidth);
+    final frame = await codec.getNextFrame();
+    final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+    desc.dispose();
+    buffer.dispose();
+    if (data == null) return path;
+    final dir = await getTemporaryDirectory();
+    final out = File('${dir.path}/scan_small.png');
+    await out.writeAsBytes(data.buffer.asUint8List());
+    return out.path;
+  } catch (_) {
+    return path;
+  }
+}
+
 class ScanRow {
   ScanRow(this.name, this.price);
   String name;
@@ -1163,6 +1201,21 @@ String _normDigits(String s) {
       .replaceAll(RegExp('[‎‏‪-‮⁦-⁩]'), '');
 }
 
+/// اسم قصير مختلط عربي + لاتيني (مثل «oe فا»): غالباً ضجيج من عنوان الفاتورة.
+bool _isNoiseName(String name) {
+  final compact = name.replaceAll(' ', '');
+  if (compact.length < 3) return true;
+  final hasAr = RegExp(r'[؀-ۿ]').hasMatch(name);
+  final hasEn = RegExp(r'[A-Za-z]').hasMatch(name);
+  return name.split(' ').length >= 2 && hasAr && hasEn && name.length <= 8;
+}
+
+/// «2 0 0 0» → «2000» (أرقام مفصولة بمسافات في سطر الإجمالي).
+String _joinSpacedDigits(String s) => s.replaceAllMapped(
+      RegExp(r'(?<!\d)\d(?: \d){2,}(?!\d)'),
+      (m) => m.group(0)!.replaceAll(' ', ''),
+    );
+
 /// يستخرج البنود من نص Tesseract: «[رقم] الاسم السعر العدد المجموع».
 List<ScanRow> parseTesseract(List<String> rawLines) {
   final rows = <ScanRow>[];
@@ -1185,6 +1238,7 @@ List<ScanRow> parseTesseract(List<String> rawLines) {
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
     if (!_letterRe.hasMatch(name)) continue;
+    if (_isNoiseName(name)) continue;
     // رقم الصف (أو الكمية) في أول السطر
     if (nums.length >= 2 && ms.first.start == 0) nums = nums.sublist(1);
     double amount;
@@ -1212,7 +1266,7 @@ double? guessTotal(List<String> rawLines) {
         _headerRe.hasMatch(line)) {
       continue;
     }
-    var ms = _numRe.allMatches(line).toList();
+    var ms = _numRe.allMatches(_joinSpacedDigits(line)).toList();
     if (ms.isEmpty && i + 1 < lines.length) {
       ms = _numRe.allMatches(lines[i + 1]).toList();
     }
