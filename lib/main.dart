@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_tesseract_ocr/flutter_tesseract_ocr.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -427,7 +428,11 @@ class _HomePageState extends State<HomePage> {
     var progressShown = false;
     try {
       final picked =
-          await ImagePicker().pickImage(source: source, imageQuality: 90);
+          await ImagePicker().pickImage(
+        source: source,
+        imageQuality: 90,
+        maxWidth: 1800,
+      );
       if (picked == null) return;
       if (!mounted) return;
       progressShown = true;
@@ -449,6 +454,18 @@ class _HomePageState extends State<HomePage> {
       } finally {
         await recognizer.close();
       }
+      // قراءة عربية بـ Tesseract (تقرأ الأسماء العربية)؛ إن فشلت نكتفي بـ ML Kit
+      try {
+        final text = await FlutterTesseractOcr.extractText(
+          picked.path,
+          language: 'ara+eng',
+          args: {'psm': '4', 'preserve_interword_spaces': '1'},
+        );
+        final tl = text.split('\n');
+        final tRows = parseTesseract(tl);
+        if (tRows.isNotEmpty) rows = tRows;
+        totalGuess = guessTotal(tl) ?? totalGuess;
+      } catch (_) {}
     } catch (_) {
       rows = null;
     } finally {
@@ -1121,16 +1138,80 @@ List<ScanRow> parseReceipt(List<String> lines) {
   return rows;
 }
 
-final RegExp _totalKeyRe = RegExp(r'total|amount due|grand', caseSensitive: false);
+final RegExp _totalKeyRe = RegExp(
+  r'total|amount due|grand|المجموع|الإجمالي|الاجمالي|المطلوب|الصافي',
+  caseSensitive: false,
+);
+final RegExp _headerRe = RegExp(r'السعر|الصنف|العدد|الكمية|البيان');
+final RegExp _skipArRe = RegExp(
+  r'المجموع|الإجمالي|الاجمالي|المطلوب|المدفوع|الرصيد|الضريبة|الضريبه|ضريبة|الخدمة|هاتف|عنوان|بريد|تاريخ|رقم الفاتورة|@',
+);
+final RegExp _letterRe = RegExp(r'[A-Za-z؀-ۿ]');
+
+/// يحوّل الأرقام العربية/الفارسية إلى لاتينية ويحذف علامات الاتجاه.
+String _normDigits(String s) {
+  const ar = '٠١٢٣٤٥٦٧٨٩';
+  const fa = '۰۱۲۳۴۵۶۷۸۹';
+  final b = StringBuffer();
+  for (final ch in s.split('')) {
+    var i = ar.indexOf(ch);
+    if (i < 0) i = fa.indexOf(ch);
+    b.write(i >= 0 ? '$i' : ch);
+  }
+  return b
+      .toString()
+      .replaceAll(RegExp('[‎‏‪-‮⁦-⁩]'), '');
+}
+
+/// يستخرج البنود من نص Tesseract: «[رقم] الاسم السعر العدد المجموع».
+List<ScanRow> parseTesseract(List<String> rawLines) {
+  final rows = <ScanRow>[];
+  for (final raw in rawLines) {
+    final line = _normDigits(raw).trim();
+    if (line.isEmpty) continue;
+    if (_skipRe.hasMatch(line) || _skipArRe.hasMatch(line)) continue;
+    if (line.contains(':') || line.contains('/') || _dateRe.hasMatch(line)) {
+      continue;
+    }
+    final ms = _numRe.allMatches(line).toList();
+    if (ms.isEmpty) continue;
+    var nums = [for (final m in ms) _toDouble(m.group(0)!)]
+        .whereType<double>()
+        .toList();
+    if (nums.isEmpty) continue;
+    final name = line
+        .replaceAll(_numRe, ' ')
+        .replaceAll(RegExp(r'[|_=*×@~\[\]{}()<>]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (!_letterRe.hasMatch(name)) continue;
+    // رقم الصف (أو الكمية) في أول السطر
+    if (nums.length >= 2 && ms.first.start == 0) nums = nums.sublist(1);
+    double amount;
+    if (nums.length >= 3 && nums.last == 0) {
+      amount = nums[0] * nums[1]; // السعر × العدد حين يكون المجموع صفراً
+    } else {
+      amount = nums.last;
+    }
+    if (amount <= 0 || amount >= 100000) continue;
+    rows.add(ScanRow(name, amount));
+  }
+  return rows;
+}
 final RegExp _subTotalRe = RegExp(r'sub\s*-?\s*total', caseSensitive: false);
 final RegExp _dateRe = RegExp(r'\d{1,4}[-.]\d{1,2}[-.]\d{1,4}');
 
 /// يخمّن إجمالي الفاتورة: من سطر فيه «Total»، وإلا أكبر رقم معقول.
-double? guessTotal(List<String> lines) {
+double? guessTotal(List<String> rawLines) {
+  final lines = [for (final l in rawLines) _normDigits(l)];
   final keyed = <double>[];
   for (var i = 0; i < lines.length; i++) {
     final line = lines[i];
-    if (!_totalKeyRe.hasMatch(line) || _subTotalRe.hasMatch(line)) continue;
+    if (!_totalKeyRe.hasMatch(line) ||
+        _subTotalRe.hasMatch(line) ||
+        _headerRe.hasMatch(line)) {
+      continue;
+    }
     var ms = _numRe.allMatches(line).toList();
     if (ms.isEmpty && i + 1 < lines.length) {
       ms = _numRe.allMatches(lines[i + 1]).toList();
@@ -1235,8 +1316,7 @@ class _ScanReviewDialogState extends State<_ScanReviewDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'القراءة قد لا تكون دقيقة، والأسماء العربية لا تُقرأ جيداً. '
-            'عدّل الأسماء والأسعار وألغِ ما لا يلزم.',
+            'القراءة قد لا تكون دقيقة. راجع الأسماء والأسعار وألغِ ما لا يلزم.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 8),
