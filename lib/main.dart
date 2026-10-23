@@ -15,6 +15,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'extras.dart';
+
 void main() => runApp(const QassimhaApp());
 
 const String kCurrency = 'د.ل';
@@ -576,7 +578,20 @@ class _HomePageState extends State<HomePage> {
       listenable: bill,
       builder: (context, _) {
         return Scaffold(
-          appBar: AppBar(title: const Text('قسّمها')),
+          appBar: AppBar(
+            title: const Text('قسّمها'),
+            actions: [
+              IconButton(
+                tooltip: 'المزيد',
+                icon: const Icon(Icons.apps_rounded),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => MorePage(bill: bill),
+                  ),
+                ),
+              ),
+            ],
+          ),
           floatingActionButton: FloatingActionButton.extended(
             onPressed: _addItem,
             icon: const Icon(Icons.add),
