@@ -16,8 +16,14 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'extras.dart';
+import 'extras3.dart';
+import 'extras4.dart';
 
-void main() => runApp(const QassimhaApp());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  loadAppSettings();
+  runApp(const QassimhaApp());
+}
 
 const String kCurrency = 'د.ل';
 const String kTagline = 'قُسّمت بتطبيق «قسّمها»';
@@ -289,7 +295,9 @@ class QassimhaApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return ListenableBuilder(
+      listenable: Listenable.merge([gThemeMode, gTextScale]),
+      builder: (context, _) => MaterialApp(
       title: 'قسّمها',
       debugShowCheckedModeBanner: false,
       locale: const Locale('ar'),
@@ -309,7 +317,14 @@ class QassimhaApp extends StatelessWidget {
         colorSchemeSeed: const Color(0xFF0E7C66),
         brightness: Brightness.dark,
       ),
+      themeMode: gThemeMode.value,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context)
+            .copyWith(textScaler: TextScaler.linear(gTextScale.value)),
+        child: child ?? const SizedBox(),
+      ),
       home: const HomePage(),
+    ),
     );
   }
 }
@@ -328,6 +343,8 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     bill.load();
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => maybeShowWelcome(context));
   }
 
   @override

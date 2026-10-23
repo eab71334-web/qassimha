@@ -5,6 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'extras2.dart';
+import 'extras3.dart';
+import 'extras4.dart';
 import 'main.dart';
 
 // ═════════════════════════ صفحة «المزيد» ═════════════════════════
@@ -53,6 +56,125 @@ class MorePage extends StatelessWidget {
             title: 'الجمعية الشهرية',
             subtitle: 'جدول القبض ومَن دفع هذا الشهر',
             page: () => const JamiyaListPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.beach_access_outlined,
+            title: 'الرحلات والمصاريف الجماعية',
+            subtitle: 'كل واحد يسجل ما دفعه، والتسوية بأقل تحويلات',
+            page: () => const TripsListPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.event_repeat,
+            title: 'فواتير متكررة',
+            subtitle: 'إيجار وكهرباء، ومَن عليه الدور هذا الشهر',
+            page: () => const RecurringPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.savings_outlined,
+            title: 'الصندوق المشترك',
+            subtitle: 'إيداع وصرف ورصيد الجماعة',
+            page: () => const FundListPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.insights_outlined,
+            title: 'إحصائيات',
+            subtitle: 'كم صرفتم وأين ومَن دفع أكثر',
+            page: () => StatsPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.qr_code_2,
+            title: 'كود الحساب',
+            subtitle: 'أرسل حسابك بكود، أو افتح كود وصلك',
+            page: () => ShareCodePage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.group_outlined,
+            title: 'مجموعات وقوالب',
+            subtitle: 'احفظ شلتك وأضفها للفاتورة بضغطة',
+            page: () => GroupsPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.casino_outlined,
+            title: 'من يدفع هذه المرة؟',
+            subtitle: 'قرعة مرحة تختار الدافع',
+            page: () => WheelPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.currency_exchange,
+            title: 'عملة أخرى',
+            subtitle: 'الحصص بالدولار أو اليورو وغيرها',
+            page: () => CurrencyPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.volunteer_activism_outlined,
+            title: 'توزيع الإكرامية',
+            subtitle: 'حسب ما أكل كل واحد أو بالتساوي',
+            page: () => TipPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.summarize_outlined,
+            title: 'ملخص أسبوعي',
+            subtitle: 'رسالة جاهزة بما صرفتموه هذا الأسبوع',
+            page: () => WeeklyPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.settings_outlined,
+            title: 'الإعدادات والنسخ الاحتياطي',
+            subtitle: 'المظهر، حجم الخط، بيانات الحوالة، النسخ',
+            page: () => const SettingsPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.person_search_outlined,
+            title: 'سجل الأصدقاء',
+            subtitle: 'كل ما بينك وبين كل صديق: ديون ورحلات وفواتير',
+            page: () => FriendsPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.emoji_events_outlined,
+            title: 'مَن يدفع أكثر؟',
+            subtitle: 'ألقاب مرحة: كريم الشلة والمتهرّب',
+            page: () => const LeaderboardPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.speed_outlined,
+            title: 'الميزانية الشهرية',
+            subtitle: 'سقف للصرف وتنبيه عند الاقتراب منه',
+            page: () => BudgetPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.photo_library_outlined,
+            title: 'صور الإيصالات',
+            subtitle: 'احفظ صورة الإيصال وافتحها لاحقاً',
+            page: () => const ReceiptsPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.table_chart_outlined,
+            title: 'تصدير كشف حساب',
+            subtitle: 'ملف CSV يفتح في Excel',
+            page: () => ExportPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.help_outline,
+            title: 'شرح التطبيق',
+            subtitle: 'عرض شاشة الترحيب من جديد',
+            page: () => const WelcomePage(),
           ),
         ],
       ),
@@ -384,9 +506,22 @@ class _DebtsPageState extends State<DebtsPage> {
                   child: ListTile(
                     title: Text('${n.debtor} ← ${n.creditor}'),
                     subtitle: Text('${fmt(n.amount)} $kCurrency'),
-                    trailing: TextButton(
-                      onPressed: () => book.settlePair(n.debtor, n.creditor),
-                      child: const Text('سدّد'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'تذكير',
+                          icon: const Icon(Icons.notifications_active_outlined),
+                          onPressed: () => shareText(
+                            context,
+                            remindText(n.debtor, n.amount, ''),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => book.settlePair(n.debtor, n.creditor),
+                          child: const Text('سدّد'),
+                        ),
+                      ],
                     ),
                   ),
                 ),
