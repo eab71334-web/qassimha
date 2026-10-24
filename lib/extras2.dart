@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,74 @@ List<Map<String, dynamic>> _maps(dynamic v) => [
       for (final e in (v as List? ?? [])) Map<String, dynamic>.from(e as Map),
     ];
 
+
+final GlobalKey<ScaffoldMessengerState> gMessengerKey =
+    GlobalKey<ScaffoldMessengerState>();
+
+/// رسالة سفلية فيها زر «تراجع».
+void showUndo(String msg, VoidCallback undo) {
+  final m = gMessengerKey.currentState;
+  if (m == null) return;
+  m.clearSnackBars();
+  m.showSnackBar(
+    SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 6),
+      action: SnackBarAction(label: 'تراجع', onPressed: undo),
+    ),
+  );
+}
+
+const String kTrashKey = 'qassimha_trash_v1';
+
+/// ينقل عنصراً محذوفاً إلى السلة (يُحفظ 30 يوماً). يعيد رقم السجل في السلة.
+String trashPush(String storeKey, String label, Map<String, dynamic> item) {
+  final id = _newId();
+  () async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final raw = sp.getString(kTrashKey);
+      final list = raw == null ? <Map<String, dynamic>>[] : _maps(jsonDecode(raw));
+      final cutoff = DateTime.now().subtract(const Duration(days: 30));
+      list.removeWhere((e) {
+        final d = DateTime.tryParse(e['at'].toString());
+        return d == null || d.isBefore(cutoff);
+      });
+      list.insert(0, {
+        'id': id,
+        'store': storeKey,
+        'label': label,
+        'item': item,
+        'at': DateTime.now().toIso8601String(),
+      });
+      await sp.setString(kTrashKey, jsonEncode(list));
+    } catch (_) {}
+  }();
+  return id;
+}
+
+Future<void> trashRemove(String id) async {
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final raw = sp.getString(kTrashKey);
+    if (raw == null) return;
+    final list = _maps(jsonDecode(raw))..removeWhere((e) => e['id'] == id);
+    await sp.setString(kTrashKey, jsonEncode(list));
+  } catch (_) {}
+}
+
+/// يعيد عنصراً إلى قائمة محفوظة (يُستعمل حين تكون الصفحة الأصلية مغلقة).
+Future<void> restoreToPrefs(String key, Map<String, dynamic> item) async {
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final raw = sp.getString(key);
+    final list = raw == null ? <Map<String, dynamic>>[] : _maps(jsonDecode(raw));
+    list.removeWhere((e) => e['id'] == item['id']);
+    list.insert(0, item);
+    await sp.setString(key, jsonEncode(list));
+  } catch (_) {}
+}
+
 Future<void> shareText(BuildContext context, String text) async {
   try {
     await Share.share(text);
@@ -37,10 +106,13 @@ Future<void> shareText(BuildContext context, String text) async {
 String remindText(String name, double amount, String what) {
   final w = what.trim().isEmpty ? 'الحساب' : what.trim();
   final pay = gPayInfo.trim().isEmpty ? '' : '\nحوّل لي على: ${gPayInfo.trim()}';
-  return 'يا $name 👋 ما تنساش حق $w: ${fmt(amount)} $kCurrency 😄$pay\n$kTagline';
+  final me = gMyName.trim().isEmpty ? '' : '\n— ${gMyName.trim()}';
+  return 'يا $name 👋 ما تنساش حق $w: ${fmt(amount)} $kCurrency 😄$pay$me\n$kTagline';
 }
 
-Future<String?> askText(BuildContext c, String t, String l) => _askText(c, t, l);
+Future<String?> askText(BuildContext c, String t, String l,
+        [String initial = '']) =>
+    _askText(c, t, l, initial);
 
 Future<Map<String, dynamic>?> askForm(
   BuildContext context, {
@@ -79,8 +151,9 @@ Future<bool> _confirm(BuildContext context, String msg) async {
   return r ?? false;
 }
 
-Future<String?> _askText(BuildContext context, String title, String label) {
-  final c = TextEditingController();
+Future<String?> _askText(BuildContext context, String title, String label,
+    [String initial = '']) {
+  final c = TextEditingController(text: initial);
   return showDialog<String>(
     context: context,
     builder: (_) => AlertDialog(
@@ -139,10 +212,33 @@ class JsonStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   void removeId(String id) {
-    items.removeWhere((e) => e['id'] == id);
+    final i = items.indexWhere((e) => e['id'] == id);
+    if (i < 0) return;
+    final item = items.removeAt(i);
     _save();
     notifyListeners();
+    final label =
+        (item['name'] ?? item['title'] ?? 'عنصر').toString();
+    final tid = trashPush(key, label, item);
+    showUndo('تم الحذف: $label', () {
+      if (_disposed) {
+        restoreToPrefs(key, item);
+      } else {
+        items.insert(i > items.length ? items.length : i, item);
+        _save();
+        notifyListeners();
+      }
+      trashRemove(tid);
+    });
   }
 
   /// بعد تعديل أي سجل مباشرة.
@@ -545,14 +641,21 @@ class TripDetailPage extends StatelessWidget {
                   contentPadding: EdgeInsets.zero,
                   title: Text('${e['title']} · ${fmt(_num(e['amount']))} $kCurrency'),
                   subtitle: Text(
-                    'دفع: ${e['payer']} · على ${(e['shares'] as Map).length} أشخاص',
+                    'دفع: ${e['payer']} · ${e['cat'] ?? 'أخرى'} · على ${(e['shares'] as Map).length} أشخاص',
                   ),
                   trailing: IconButton(
                     icon: const Icon(Icons.delete_outline),
                     onPressed: () {
-                      (t['expenses'] as List)
-                          .removeWhere((x) => (x as Map)['id'] == e['id']);
+                      final list = t['expenses'] as List;
+                      final idx =
+                          list.indexWhere((x) => (x as Map)['id'] == e['id']);
+                      if (idx < 0) return;
+                      final removed = list.removeAt(idx);
                       store.touch();
+                      showUndo('تم حذف المصروف', () {
+                        list.insert(idx > list.length ? list.length : idx, removed);
+                        store.touch();
+                      });
                     },
                   ),
                 ),
@@ -580,6 +683,7 @@ class _ExpenseDialogState extends State<_ExpenseDialog> {
   late String payer = widget.people.first;
   late final Set<String> who = {...widget.people};
   int mode = 0; // 0 بالتساوي، 1 نسب %، 2 مبالغ
+  String cat = 'أخرى';
   String? error;
 
   TextEditingController _c(String n) =>
@@ -635,6 +739,7 @@ class _ExpenseDialogState extends State<_ExpenseDialog> {
       'title': title.text.trim().isEmpty ? 'مصروف' : title.text.trim(),
       'payer': payer,
       'amount': a,
+      'cat': cat,
       'date': DateTime.now().toIso8601String(),
       'shares': shares,
     });
@@ -657,6 +762,19 @@ class _ExpenseDialogState extends State<_ExpenseDialog> {
               controller: amount,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(labelText: 'المبلغ ($kCurrency)'),
+            ),
+            const SizedBox(height: 12),
+            const Text('الفئة'),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (final c in kCats)
+                  ChoiceChip(
+                    label: Text(c),
+                    selected: cat == c,
+                    onSelected: (_) => setState(() => cat = c),
+                  ),
+              ],
             ),
             const SizedBox(height: 12),
             const Text('مَن دفع؟'),
@@ -739,6 +857,18 @@ class _ExpenseDialogState extends State<_ExpenseDialog> {
 // ═════════════════════════ 2) فواتير متكررة ═════════════════════════
 // {id, name, amount, members: [..], startY, startM, paid: ["y-m"]}
 
+const List<String> kCats = ['أكل', 'مواصلات', 'سكن', 'ترفيه', 'فواتير', 'تسوق', 'أخرى'];
+
+const Map<String, Color> kCatColors = {
+  'أكل': Colors.orange,
+  'مواصلات': Colors.blue,
+  'سكن': Colors.brown,
+  'ترفيه': Colors.purple,
+  'فواتير': Colors.red,
+  'تسوق': Colors.teal,
+  'أخرى': Colors.grey,
+};
+
 String _monthKey(DateTime d) => '${d.year}-${d.month}';
 
 class RecurringPage extends StatefulWidget {
@@ -770,16 +900,33 @@ class _RecurringPageState extends State<RecurringPage> {
         title: 'فاتورة متكررة',
         nameLabel: 'الاسم (إيجار، كهرباء…)',
         amountLabel: 'المبلغ الشهري',
-        membersLabel: 'الأشخاص بترتيب الدور (كل اسم في سطر)',
+        membersLabel:
+            'الأشخاص بترتيب الدور (كل اسم في سطر). لمبلغ ثابت اكتب: الاسم=المبلغ، والباقي يتقاسمونه بالتساوي',
       ),
     );
     if (r == null) return;
+    final names = <String>[];
+    final fixed = <String, double>{};
+    for (final raw in (r['members'] as List)) {
+      final line = raw.toString();
+      final i = line.indexOf('=');
+      if (i > 0) {
+        final n = line.substring(0, i).trim();
+        final v = parsePrice(line.substring(i + 1));
+        names.add(n);
+        if (v != null && v >= 0) fixed[n] = v;
+      } else {
+        names.add(line);
+      }
+    }
+    if (names.toSet().length < 2) return;
     final now = DateTime.now();
     store.add({
       'id': _newId(),
       'name': r['name'],
       'amount': r['amount'],
-      'members': r['members'],
+      'members': names.toSet().toList(),
+      'fixed': fixed,
       'startY': now.year,
       'startM': now.month,
       'paid': <String>[],
@@ -823,6 +970,12 @@ class _RecurringPageState extends State<RecurringPage> {
     final payerIdx = months < 0 ? 0 : months % members.length;
     final payer = members[payerIdx];
     final next = members[(payerIdx + 1) % members.length];
+    final fixed = Map<String, dynamic>.from(r['fixed'] as Map? ?? {});
+    final fixedSum = fixed.values.fold<double>(0, (a, v) => a + _num(v));
+    final rest = members.where((m) => !fixed.containsKey(m)).toList();
+    final restEach =
+        rest.isEmpty ? 0.0 : math.max(0.0, amount - fixedSum) / rest.length;
+    double shareOf(String m) => fixed.containsKey(m) ? _num(fixed[m]) : restEach;
     final each = amount / members.length;
     final paid = _strs(r['paid']);
     final isPaid = paid.contains(mk);
@@ -851,7 +1004,11 @@ class _RecurringPageState extends State<RecurringPage> {
               ],
             ),
             Text('دور هذا الشهر: $payer · الشهر القادم: $next'),
-            Text('حصة كل واحد: ${fmt(each)} $kCurrency'),
+            if (fixed.isEmpty)
+              Text('حصة كل واحد: ${fmt(each)} $kCurrency')
+            else
+              for (final m in members)
+                Text('• $m: ${fmt(shareOf(m))} $kCurrency'),
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
@@ -873,7 +1030,8 @@ class _RecurringPageState extends State<RecurringPage> {
                 onPressed: () => shareText(
                   context,
                   '🧾 ${r['name']} هذا الشهر\n'
-                  '$payer يدفعها ويجمع من الباقي ${fmt(each)} $kCurrency لكل واحد 😄\n'
+                  '$payer يدفعها ويجمع من الباقي 😄\n'
+                  '${members.map((m) => '• $m: ${fmt(shareOf(m))} $kCurrency').join('\n')}\n'
                   '$kTagline',
                 ),
                 icon: const Icon(Icons.notifications_active_outlined, size: 18),
@@ -1121,9 +1279,16 @@ class FundDetailPage extends StatelessWidget {
                   trailing: IconButton(
                     icon: const Icon(Icons.delete_outline),
                     onPressed: () {
-                      (f['entries'] as List)
-                          .removeWhere((x) => (x as Map)['id'] == e['id']);
+                      final list = f['entries'] as List;
+                      final idx =
+                          list.indexWhere((x) => (x as Map)['id'] == e['id']);
+                      if (idx < 0) return;
+                      final removed = list.removeAt(idx);
                       store.touch();
+                      showUndo('تم حذف الحركة', () {
+                        list.insert(idx > list.length ? list.length : idx, removed);
+                        store.touch();
+                      });
                     },
                   ),
                 ),
@@ -1254,7 +1419,8 @@ class _StatsPageState extends State<StatsPage> {
     super.dispose();
   }
 
-  Widget _bars(BuildContext context, Map<String, double> data, {int max = 5}) {
+  Widget _bars(BuildContext context, Map<String, double> data,
+      {int max = 5, Color Function(String)? colorOf}) {
     final list = data.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final top = list.take(max).toList();
@@ -1280,7 +1446,10 @@ class _StatsPageState extends State<StatsPage> {
                   ],
                 ),
                 const SizedBox(height: 2),
-                LinearProgressIndicator(value: e.value / mx),
+                LinearProgressIndicator(
+                  value: e.value / mx,
+                  color: colorOf?.call(e.key),
+                ),
               ],
             ),
           ),
@@ -1295,6 +1464,7 @@ class _StatsPageState extends State<StatsPage> {
     final places = <String, double>{};
     final friends = <String, double>{}; // مجموع حصص كل شخص
     final payers = <String, double>{}; // مَن دفع أكثر في الرحلات
+    final cats = <String, double>{};
     var thisMonth = 0.0;
     var all = 0.0;
 
@@ -1318,6 +1488,8 @@ class _StatsPageState extends State<StatsPage> {
         final nm = t['name'].toString();
         places[nm] = (places[nm] ?? 0) + a;
         payers[e['payer'].toString()] = (payers[e['payer'].toString()] ?? 0) + a;
+        final cn = (e['cat'] ?? 'أخرى').toString();
+        cats[cn] = (cats[cn] ?? 0) + a;
         Map<String, dynamic>.from(e['shares'] as Map? ?? {}).forEach(
             (k, v) => friends[k] = (friends[k] ?? 0) + _num(v));
       }
@@ -1357,6 +1529,10 @@ class _StatsPageState extends State<StatsPage> {
             const SizedBox(height: 16),
             Text('أكثر الأماكن والرحلات إنفاقاً', style: tt),
             _bars(context, places),
+            const SizedBox(height: 16),
+            Text('حسب الفئة (من مصاريف الرحلات)', style: tt),
+            _bars(context, cats,
+                max: 7, colorOf: (k) => kCatColors[k] ?? Colors.grey),
             const SizedBox(height: 16),
             Text('أكثر حصص الأصدقاء', style: tt),
             _bars(context, friends),

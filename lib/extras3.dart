@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'extras2.dart';
+import 'extras5.dart';
 import 'main.dart';
 
 // ═════════════════════════ إعدادات عامة (يقرؤها main.dart) ═════════════════════════
@@ -15,6 +16,8 @@ final ValueNotifier<double> gTextScale = ValueNotifier(1.0);
 
 /// بيانات استلام الحوالة، تُضاف لرسائل التذكير.
 String gPayInfo = '';
+String gMyName = '';
+String gFavCurrency = 'USD';
 
 Future<void> loadAppSettings() async {
   try {
@@ -27,6 +30,9 @@ Future<void> loadAppSettings() async {
             : ThemeMode.system;
     gTextScale.value = sp.getDouble('qassimha_scale') ?? 1.0;
     gPayInfo = sp.getString('qassimha_payinfo') ?? '';
+    gMyName = sp.getString('qassimha_myname') ?? '';
+    gFavCurrency = sp.getString('qassimha_favcur') ?? 'USD';
+    gPinHash.value = sp.getString('qassimha_pin');
   } catch (_) {}
 }
 
@@ -52,11 +58,15 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   final pay = TextEditingController(text: gPayInfo);
+  final myName = TextEditingController(text: gMyName);
+  final favCur = TextEditingController(text: gFavCurrency);
   final restore = TextEditingController();
 
   @override
   void dispose() {
     pay.dispose();
+    myName.dispose();
+    favCur.dispose();
     restore.dispose();
     super.dispose();
   }
@@ -83,8 +93,12 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _savePay() async {
     gPayInfo = pay.text.trim();
+    gMyName = myName.text.trim();
+    gFavCurrency = favCur.text.trim().isEmpty ? 'USD' : favCur.text.trim();
     final sp = await SharedPreferences.getInstance();
     await sp.setString('qassimha_payinfo', gPayInfo);
+    await sp.setString('qassimha_myname', gMyName);
+    await sp.setString('qassimha_favcur', gFavCurrency);
     _snack('تم الحفظ');
   }
 
@@ -97,6 +111,7 @@ class _SettingsPageState extends State<SettingsPage> {
       if (v is String) data[k] = v;
     }
     final code = 'QSMBK1:${base64Url.encode(utf8.encode(jsonEncode(data)))}';
+    await sp.setString('qassimha_last_backup', DateTime.now().toIso8601String());
     if (!mounted) return;
     await shareText(context, code);
   }
@@ -150,27 +165,47 @@ class _SettingsPageState extends State<SettingsPage> {
               min: 0.9,
               max: 1.5,
               divisions: 6,
-              value: v.clamp(0.9, 1.5),
+              value: math.min(1.5, math.max(0.9, v)),
               label: '${(v * 100).round()}%',
               onChanged: (x) => gTextScale.value = x,
               onChangeEnd: _setScale,
             ),
           ),
           const Divider(height: 32),
-          Text('بيانات استلام الحوالة', style: tt),
+          Text('ملفي الشخصي', style: tt),
           const SizedBox(height: 4),
-          const Text('تُضاف لرسائل التذكير: «حوّل لي على…»',
+          const Text('تُملأ تلقائياً في رسائل التذكير وصفحة العملات',
               style: TextStyle(fontSize: 12)),
+          TextField(
+            controller: myName,
+            decoration: const InputDecoration(labelText: 'اسمك'),
+          ),
+          TextField(
+            controller: favCur,
+            decoration: const InputDecoration(
+                labelText: 'عملتك المفضلة للتحويل (USD, EUR…)'),
+          ),
           TextField(
             controller: pay,
             decoration: const InputDecoration(
-              labelText: 'رقم حسابك أو محفظتك',
+              labelText: 'بيانات استلام الحوالة (رقم حسابك أو محفظتك)',
             ),
           ),
           const SizedBox(height: 8),
           Align(
             alignment: AlignmentDirectional.centerStart,
             child: FilledButton(onPressed: _savePay, child: const Text('حفظ')),
+          ),
+          const Divider(height: 32),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.lock_outline),
+            title: const Text('قفل التطبيق برمز PIN'),
+            subtitle: const Text('يحمي ديونك وحساباتك'),
+            trailing: const Icon(Icons.chevron_left),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const PinSettingsPage()),
+            ),
           ),
           const Divider(height: 32),
           Text('نسخ احتياطي', style: tt),
@@ -603,7 +638,7 @@ class CurrencyPage extends StatefulWidget {
 }
 
 class _CurrencyPageState extends State<CurrencyPage> {
-  final code = TextEditingController(text: 'USD');
+  final code = TextEditingController(text: gFavCurrency);
   final rate = TextEditingController();
 
   @override

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -13,13 +14,13 @@ import 'main.dart';
 
 // ═════════════════════════ بيانات مشتركة بين الصفحات ═════════════════════════
 
-class _Data {
-  _Data(this.debts, this.trips);
+class AppData {
+  AppData(this.debts, this.trips);
   final List<DebtEntry> debts;
   final List<Map<String, dynamic>> trips;
 }
 
-Future<_Data> _loadData() async {
+Future<AppData> loadAppData() async {
   final debts = <DebtEntry>[];
   final trips = <Map<String, dynamic>>[];
   try {
@@ -39,7 +40,7 @@ Future<_Data> _loadData() async {
       }
     }
   } catch (_) {}
-  return _Data(debts, trips);
+  return AppData(debts, trips);
 }
 
 double _n(dynamic v) => (v as num?)?.toDouble() ?? 0;
@@ -62,8 +63,8 @@ class FriendsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('سجل الأصدقاء')),
-      body: FutureBuilder<_Data>(
-        future: _loadData(),
+      body: FutureBuilder<AppData>(
+        future: loadAppData(),
         builder: (context, snap) {
           if (!snap.hasData) {
             return const Center(child: CircularProgressIndicator());
@@ -112,7 +113,7 @@ class FriendDetailPage extends StatelessWidget {
     required this.bill,
   });
   final String name;
-  final _Data data;
+  final AppData data;
   final Bill bill;
 
   @override
@@ -139,7 +140,7 @@ class FriendDetailPage extends StatelessWidget {
           for (final d in debts)
             Builder(builder: (context) {
               final days = now.difference(d.date).inDays;
-              final late = days >= 3;
+              final isLate = days >= 3;
               final owes = d.debtor == name;
               return ListTile(
                 contentPadding: EdgeInsets.zero,
@@ -149,20 +150,20 @@ class FriendDetailPage extends StatelessWidget {
                 ),
                 title: Text(
                   owes
-                      ? 'عليه لـ ${d.creditor}: ${fmt(d.amount)} $kCurrency'
-                      : 'له عند ${d.debtor}: ${fmt(d.amount)} $kCurrency',
+                      ? 'عليه لـ ${d.creditor}: ${fmt(d.remaining)} $kCurrency'
+                      : 'له عند ${d.debtor}: ${fmt(d.remaining)} $kCurrency',
                 ),
                 subtitle: Text(
                   '${d.note.isEmpty ? 'دين' : d.note} · منذ $days يوم'
-                  '${late ? ' ⏰ متأخر' : ''}',
+                  '${isLate ? ' ⏰ متأخر' : ''}',
                 ),
-                trailing: owes && late
+                trailing: owes && isLate
                     ? IconButton(
                         tooltip: 'تذكير',
                         icon: const Icon(Icons.notifications_active_outlined),
                         onPressed: () => shareText(
                           context,
-                          remindText(name, d.amount, d.note),
+                          remindText(name, d.remaining, d.note),
                         ),
                       )
                     : null,
@@ -221,8 +222,8 @@ class LeaderboardPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('مَن يدفع أكثر؟')),
-      body: FutureBuilder<_Data>(
-        future: _loadData(),
+      body: FutureBuilder<AppData>(
+        future: loadAppData(),
         builder: (context, snap) {
           if (!snap.hasData) {
             return const Center(child: CircularProgressIndicator());
@@ -342,7 +343,7 @@ class _BudgetPageState extends State<BudgetPage> {
 
   Future<void> _init() async {
     final sp = await SharedPreferences.getInstance();
-    final data = await _loadData();
+    final data = await loadAppData();
     final now = DateTime.now();
     bool same(DateTime d) => d.year == now.year && d.month == now.month;
     var s = 0.0;
@@ -402,7 +403,7 @@ class _BudgetPageState extends State<BudgetPage> {
           if (limit > 0) ...[
             const SizedBox(height: 8),
             LinearProgressIndicator(
-              value: ratio.clamp(0.0, 1.0),
+              value: math.min(1.0, math.max(0.0, ratio)),
               minHeight: 10,
               color: color,
             ),
@@ -572,10 +573,7 @@ class _ReceiptsPageState extends State<ReceiptsPage> {
                     onTap: dir.isEmpty ? null : () => _view(r),
                     trailing: IconButton(
                       icon: const Icon(Icons.delete_outline),
-                      onPressed: () async {
-                        try {
-                          await File('$dir/${r['file']}').delete();
-                        } catch (_) {}
+                      onPressed: () {
                         store.removeId(r['id'].toString());
                       },
                     ),
@@ -652,8 +650,8 @@ class _ExportPageState extends State<ExportPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('تصدير كشف حساب')),
-      body: FutureBuilder<_Data>(
-        future: _loadData(),
+      body: FutureBuilder<AppData>(
+        future: loadAppData(),
         builder: (context, snap) {
           final trips = snap.data?.trips ?? [];
           return ListView(

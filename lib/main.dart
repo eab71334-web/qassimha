@@ -18,6 +18,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'extras.dart';
 import 'extras3.dart';
 import 'extras4.dart';
+import 'extras5.dart';
+import 'extras6.dart';
+import 'extras2.dart' show gMessengerKey;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -318,12 +321,13 @@ class QassimhaApp extends StatelessWidget {
         brightness: Brightness.dark,
       ),
       themeMode: gThemeMode.value,
+      scaffoldMessengerKey: gMessengerKey,
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(context)
             .copyWith(textScaler: TextScaler.linear(gTextScale.value)),
         child: child ?? const SizedBox(),
       ),
-      home: const HomePage(),
+      home: const LockGate(child: HomePage()),
     ),
     );
   }
@@ -447,6 +451,7 @@ class _HomePageState extends State<HomePage> {
     List<ScanRow>? rows;
     double? totalGuess;
     var mlLines = <String>[];
+    var tessLines = <String>[];
     var progressShown = false;
     try {
       String imagePath;
@@ -493,10 +498,14 @@ class _HomePageState extends State<HomePage> {
           args: {'psm': '4'},
         );
         final tl = text.split('\n');
+        tessLines = tl;
         final tRows = parseTesseract(tl);
         if (tRows.isNotEmpty) rows = tRows;
         totalGuess = guessTotal([...mlLines, ...tl]) ?? totalGuess;
       } catch (_) {}
+      if (rows != null) {
+        totalGuess = refineTotal(rows, totalGuess, [...mlLines, ...tessLines]);
+      }
     } catch (_) {
       rows = null;
     } finally {
@@ -598,6 +607,15 @@ class _HomePageState extends State<HomePage> {
           appBar: AppBar(
             title: const Text('قسّمها'),
             actions: [
+              IconButton(
+                tooltip: 'المساعد',
+                icon: const Icon(Icons.auto_awesome),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => AssistantPage(bill: bill),
+                  ),
+                ),
+              ),
               IconButton(
                 tooltip: 'المزيد',
                 icon: const Icon(Icons.apps_rounded),
@@ -1143,9 +1161,12 @@ Future<String> _downscale(String path, {int maxWidth = 1800}) async {
 }
 
 class ScanRow {
-  ScanRow(this.name, this.price);
+  ScanRow(this.name, this.price, {this.qty = 1, double? unit})
+      : unit = unit ?? price;
   String name;
-  double price;
+  double price; // إجمالي البند
+  double qty; // العدد
+  double unit; // سعر الوحدة
 }
 
 final RegExp _numRe =
@@ -1248,11 +1269,28 @@ String _joinSpacedDigits(String s) => s.replaceAllMapped(
       (m) => m.group(0)!.replaceAll(' ', ''),
     );
 
-/// يستخرج البنود من نص Tesseract: «[رقم] الاسم السعر العدد المجموع».
+class _Tok {
+  _Tok(this.v, this.hasDot, this.scaled, this.start);
+  final double v;
+  final bool hasDot;
+  final bool scaled; // كان بلا فاصلة عشرية فقسمناه على 100
+  final int start;
+  bool get plainInt => !hasDot && !scaled;
+}
+
+final RegExp _dec2Re = RegExp(r'\d[.,]\d{2}(?!\d)');
+
+/// هل الفاتورة تكتب الأسعار بخانتين عشريتين (مثل 7.50)؟
+bool _usesTwoDecimals(List<String> lines) =>
+    lines.fold<int>(0, (s, l) => s + _dec2Re.allMatches(l).length) >= 4;
+
+/// يستخرج البنود من نص Tesseract. يبحث في كل سطر عن (العدد × سعر الوحدة = الإجمالي)
+/// بأي ترتيب، ويعالج الفاصلة العشرية الضائعة (750 ← 7.50).
 List<ScanRow> parseTesseract(List<String> rawLines) {
+  final lines = [for (final r in rawLines) _normDigits(r).trim()];
+  final dec2 = _usesTwoDecimals(lines);
   final rows = <ScanRow>[];
-  for (final raw in rawLines) {
-    final line = _normDigits(raw).trim();
+  for (final line in lines) {
     if (line.isEmpty) continue;
     if (_skipRe.hasMatch(line) || _skipArRe.hasMatch(line)) continue;
     if (line.contains(':') || line.contains('/') || _dateRe.hasMatch(line)) {
@@ -1260,10 +1298,6 @@ List<ScanRow> parseTesseract(List<String> rawLines) {
     }
     final ms = _numRe.allMatches(line).toList();
     if (ms.isEmpty) continue;
-    var nums = [for (final m in ms) _toDouble(m.group(0)!)]
-        .whereType<double>()
-        .toList();
-    if (nums.isEmpty) continue;
     final name = line
         .replaceAll(_numRe, ' ')
         .replaceAll(RegExp(r'[|_=*×@~\[\]{}()<>]+'), ' ')
@@ -1271,19 +1305,98 @@ List<ScanRow> parseTesseract(List<String> rawLines) {
         .trim();
     if (!_letterRe.hasMatch(name)) continue;
     if (_isNoiseName(name)) continue;
-    // رقم الصف (أو الكمية) في أول السطر
-    if (nums.length >= 2 && ms.first.start == 0) nums = nums.sublist(1);
-    double amount;
-    if (nums.length >= 3 && nums.last == 0) {
-      amount = nums[0] * nums[1]; // السعر × العدد حين يكون المجموع صفراً
-    } else {
-      amount = nums.last;
+
+    final toks = <_Tok>[];
+    for (final mm in ms) {
+      final t = mm.group(0)!;
+      var v = _toDouble(t);
+      if (v == null) continue;
+      final hasDot = t.contains('.') || RegExp(r',\d{1,2}$').hasMatch(t);
+      var scaled = false;
+      if (!hasDot && !t.contains(',')) {
+        if (t.length >= 5) continue; // رقم صنف أو طلب
+        if (dec2 && t.length >= 3) {
+          v = v / 100;
+          scaled = true;
+        }
+      }
+      toks.add(_Tok(v, hasDot, scaled, mm.start));
     }
+    if (toks.isEmpty) continue;
+
+    // (العدد × سعر الوحدة = الإجمالي)
+    _Tok? bq, bu, bt;
+    var bestScore = -1;
+    for (var qi = 0; qi < toks.length; qi++) {
+      final q = toks[qi];
+      if (q.scaled || q.v < 1 || q.v > 999 || q.v != q.v.roundToDouble()) {
+        continue;
+      }
+      for (var ui = 0; ui < toks.length; ui++) {
+        if (ui == qi || toks[ui].v <= 0) continue;
+        for (var ti = 0; ti < toks.length; ti++) {
+          if (ti == qi || ti == ui || toks[ti].v <= 0) continue;
+          final u = toks[ui];
+          final t = toks[ti];
+          if ((q.v * u.v - t.v).abs() > 0.011) continue;
+          final score = (q.plainInt ? 4 : 0) +
+              ((u.hasDot || u.scaled) ? 1 : 0) +
+              ((t.hasDot || t.scaled) ? 1 : 0);
+          if (score > bestScore || (score == bestScore && t.v > bt!.v)) {
+            bestScore = score;
+            bq = q;
+            bu = u;
+            bt = t;
+          }
+        }
+      }
+    }
+    if (bt != null && bt.v < 100000) {
+      rows.add(ScanRow(name, bt.v, qty: bq!.v, unit: bu!.v));
+      continue;
+    }
+
+    // لا يوجد تطابق: نأخذ آخر رقم كسعر
+    var nums = toks;
+    if (nums.length >= 2 && nums.first.start == 0) nums = nums.sublist(1);
+    final amount = nums.last.v;
     if (amount <= 0 || amount >= 100000) continue;
     rows.add(ScanRow(name, amount));
   }
   return rows;
 }
+
+/// يصحّح الإجمالي المقترح: يفضّل رقماً في الفاتورة يطابق مجموع البنود،
+/// ويرفض رقماً بعيداً جداً (مثل رقم الفاتورة).
+double? refineTotal(List<ScanRow> rows, double? guess, List<String> rawLines) {
+  if (rows.length < 3) return guess;
+  final sum = rows.fold<double>(0, (a, r) => a + r.price);
+  if (sum <= 0) return guess;
+  final lines = [for (final l in rawLines) _normDigits(l)];
+  final dec2 = _usesTwoDecimals(lines);
+  final tol = math.max(0.5, sum * 0.01);
+  double? match;
+  for (final line in lines) {
+    if (line.contains(':') || line.contains('/') || _dateRe.hasMatch(line)) {
+      continue;
+    }
+    for (final mm in _numRe.allMatches(line)) {
+      final t = mm.group(0)!;
+      var v = _toDouble(t);
+      if (v == null) continue;
+      final plain = RegExp(r'^\d+$').hasMatch(t);
+      if (plain && dec2 && t.length >= 3 && t.length <= 6) v = v / 100;
+      if ((v - sum).abs() <= tol &&
+          (match == null || (v - sum).abs() < (match - sum).abs())) {
+        match = v;
+      }
+    }
+  }
+  if (match != null) return match;
+  if (guess == null || guess > sum * 3 || guess < sum * 0.5) return sum;
+  return guess;
+}
+
 final RegExp _subTotalRe = RegExp(r'sub\s*-?\s*total', caseSensitive: false);
 final RegExp _dateRe = RegExp(r'\d{1,4}[-.]\d{1,2}[-.]\d{1,4}');
 
@@ -1387,7 +1500,19 @@ class _ScanReviewDialogState extends State<_ScanReviewDialog> {
       final p = parsePrice(_prices[i].text);
       if (p == null || p <= 0) continue;
       final n = _names[i].text.trim();
-      out.add(ScanRow(n.isEmpty ? 'بند' : n, p));
+      final r = widget.rows[i];
+      final base = n.isEmpty ? 'بند' : n;
+      if (r.qty > 1) {
+        final unit = p / r.qty;
+        out.add(ScanRow(
+          '$base (${r.qty.round()}×${fmt(unit)})',
+          p,
+          qty: r.qty,
+          unit: unit,
+        ));
+      } else {
+        out.add(ScanRow(base, p));
+      }
     }
     Navigator.pop(context, out);
   }
@@ -1447,6 +1572,9 @@ class _ScanReviewDialogState extends State<_ScanReviewDialog> {
           ),
           const SizedBox(height: 4),
           for (var i = 0; i < widget.rows.length; i++)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
             Row(
               children: [
                 Checkbox(
@@ -1470,6 +1598,16 @@ class _ScanReviewDialogState extends State<_ScanReviewDialog> {
                     decoration: const InputDecoration(isDense: true),
                   ),
                 ),
+              ],
+            ),
+            if (widget.rows[i].qty > 1)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(start: 48, bottom: 4),
+                child: Text(
+                  'العدد ${widget.rows[i].qty.round()} × سعر الوحدة ${fmt(widget.rows[i].unit)}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
               ],
             ),
         ],

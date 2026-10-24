@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'extras2.dart';
 import 'extras3.dart';
 import 'extras4.dart';
+import 'extras5.dart';
 import 'main.dart';
 
 // ═════════════════════════ صفحة «المزيد» ═════════════════════════
@@ -43,6 +44,7 @@ class MorePage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          AlertsCard(bill: bill),
           _tile(
             context,
             icon: Icons.swap_horiz,
@@ -176,6 +178,34 @@ class MorePage extends StatelessWidget {
             subtitle: 'عرض شاشة الترحيب من جديد',
             page: () => const WelcomePage(),
           ),
+          _tile(
+            context,
+            icon: Icons.request_quote_outlined,
+            title: 'الأقساط',
+            subtitle: 'أقساط لك أو عليك: جدول وسداد وتذكير',
+            page: () => const InstallmentsPage(),
+          ),
+          _tile(
+            context,
+            icon: Icons.search,
+            title: 'بحث',
+            subtitle: 'ابحث بالاسم أو المبلغ أو التاريخ',
+            page: () => SearchPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.assessment_outlined,
+            title: 'تقرير شهري',
+            subtitle: 'ملخص جاهز للمشاركة: الإجمالي والأرصدة',
+            page: () => ReportPage(bill: bill),
+          ),
+          _tile(
+            context,
+            icon: Icons.delete_sweep_outlined,
+            title: 'سلة المحذوفات',
+            subtitle: 'استرجع ما حذفته خلال 30 يوماً',
+            page: () => const TrashPage(),
+          ),
         ],
       ),
     );
@@ -247,14 +277,22 @@ class DebtEntry {
     required this.note,
     required this.date,
     this.settled = false,
-  });
+    this.paid = 0,
+    List<Map<String, dynamic>>? payments,
+    this.promise,
+  }) : payments = payments ?? [];
   final String id;
   final String debtor; // مَن عليه الدين
   final String creditor; // صاحب الحق
-  final double amount;
-  final String note;
+  double amount;
+  String note;
   final DateTime date;
   bool settled;
+  double paid; // ما سُدِّد جزئياً
+  final List<Map<String, dynamic>> payments; // [{a: مبلغ, d: تاريخ}]
+  DateTime? promise; // تاريخ الوعد بالسداد
+
+  double get remaining => amount - paid > 0 ? amount - paid : 0.0;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -264,6 +302,9 @@ class DebtEntry {
         'note': note,
         'date': date.toIso8601String(),
         'settled': settled,
+        'paid': paid,
+        'payments': payments,
+        'promise': promise?.toIso8601String(),
       };
 
   factory DebtEntry.fromJson(Map<String, dynamic> j) => DebtEntry(
@@ -274,6 +315,14 @@ class DebtEntry {
         note: (j['note'] as String?) ?? '',
         date: DateTime.parse(j['date'] as String),
         settled: (j['settled'] as bool?) ?? false,
+        paid: (j['paid'] as num?)?.toDouble() ?? 0,
+        payments: [
+          for (final p in (j['payments'] as List? ?? []))
+            Map<String, dynamic>.from(p as Map)
+        ],
+        promise: j['promise'] == null
+            ? null
+            : DateTime.tryParse(j['promise'].toString()),
       );
 }
 
@@ -333,7 +382,41 @@ class DebtBook extends ChangeNotifier {
   }
 
   void remove(DebtEntry e) {
+    final i = entries.indexOf(e);
     entries.remove(e);
+    notifyListeners();
+    final tid = trashPush(
+        _key, '${e.debtor} ← ${e.creditor}', Map<String, dynamic>.from(e.toJson()));
+    showUndo('تم حذف الدين', () {
+      if (_disposed) {
+        restoreToPrefs(_key, e.toJson());
+      } else {
+        entries.insert(i > entries.length ? entries.length : i, e);
+        notifyListeners();
+      }
+      trashRemove(tid);
+    });
+  }
+
+  /// دفعة جزئية: تنقص المتبقي، وتُسجَّل في سجل الدفعات.
+  void addPayment(DebtEntry e, double amount) {
+    final a = amount > e.remaining ? e.remaining : amount;
+    if (a <= 0) return;
+    e.paid += a;
+    e.payments.add({'a': a, 'd': DateTime.now().toIso8601String()});
+    if (e.remaining <= 0.005) e.settled = true;
+    notifyListeners();
+  }
+
+  void editDebt(DebtEntry e, double amount, String note) {
+    e.amount = amount;
+    e.note = note.trim();
+    e.settled = e.remaining <= 0.005;
+    notifyListeners();
+  }
+
+  void setPromise(DebtEntry e, DateTime? d) {
+    e.promise = d;
     notifyListeners();
   }
 
@@ -362,7 +445,7 @@ class DebtBook extends ChangeNotifier {
     for (final e in entries) {
       if (e.settled) continue;
       final inner = m.putIfAbsent(e.debtor, () => <String, double>{});
-      inner[e.creditor] = (inner[e.creditor] ?? 0) + e.amount;
+      inner[e.creditor] = (inner[e.creditor] ?? 0) + e.remaining;
     }
     final out = <NetDebt>[];
     final seen = <String>{};
@@ -410,6 +493,107 @@ class _DebtsPageState extends State<DebtsPage> {
 
   void _snack(String t) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t)));
+  }
+
+  bool _soon(DateTime d) =>
+      d.isBefore(DateTime.now().add(const Duration(days: 1)));
+
+  Widget _debtTile(DebtEntry e) {
+    final isLate = e.promise != null && e.promise!.isBefore(DateTime.now());
+    final status = e.promise == null
+        ? 'مستحق'
+        : isLate
+            ? '⏰ متأخر عن وعد ${fmtDate(e.promise!)}'
+            : 'وعد بالدفع ${fmtDate(e.promise!)}';
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text('${e.debtor} ← ${e.creditor}'),
+      subtitle: Text(
+        '$status · ${fmtDate(e.date)}'
+        '${e.note.isEmpty ? '' : ' · ${e.note}'}'
+        '${e.paid > 0 ? ' · دُفع ${fmt(e.paid)} من ${fmt(e.amount)}' : ''}',
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('${fmt(e.remaining)} $kCurrency'),
+          PopupMenuButton<String>(
+            onSelected: (v) => _debtAction(e, v),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'pay', child: Text('دفعة جزئية')),
+              PopupMenuItem(value: 'promise', child: Text('وعد بالدفع بتاريخ')),
+              PopupMenuItem(value: 'edit', child: Text('تعديل المبلغ والملاحظة')),
+              PopupMenuItem(value: 'history', child: Text('سجل الدفعات')),
+              PopupMenuItem(value: 'remind', child: Text('تذكير')),
+              PopupMenuItem(value: 'delete', child: Text('حذف')),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _debtAction(DebtEntry e, String v) async {
+    switch (v) {
+      case 'pay':
+        final t = await askText(context, 'دفعة جزئية', 'المبلغ ($kCurrency)');
+        final a = t == null ? null : parsePrice(t);
+        if (a != null && a > 0) book.addPayment(e, a);
+        break;
+      case 'promise':
+        final now = DateTime.now();
+        final d = await showDatePicker(
+          context: context,
+          initialDate: e.promise != null && e.promise!.isAfter(now)
+              ? e.promise!
+              : now.add(const Duration(days: 3)),
+          firstDate: now.subtract(const Duration(days: 1)),
+          lastDate: now.add(const Duration(days: 730)),
+        );
+        if (d != null) book.setPromise(e, d);
+        break;
+      case 'edit':
+        final ta = await askText(
+            context, 'تعديل المبلغ', 'المبلغ ($kCurrency)', fmt(e.amount));
+        final na = ta == null ? null : parsePrice(ta);
+        if (na == null || na <= 0) return;
+        if (!mounted) return;
+        final tn = await askText(context, 'الملاحظة', 'ملاحظة', e.note);
+        book.editDebt(e, na, tn ?? e.note);
+        break;
+      case 'history':
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('سجل الدفعات'),
+            content: e.payments.isEmpty
+                ? const Text('لا توجد دفعات بعد')
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final p in e.payments)
+                        ListTile(
+                          dense: true,
+                          title: Text(
+                              '${fmt((p['a'] as num).toDouble())} $kCurrency'),
+                          subtitle: Text(fmtDate(
+                              DateTime.tryParse(p['d'].toString()) ??
+                                  DateTime.now())),
+                        ),
+                    ],
+                  ),
+          ),
+        );
+        break;
+      case 'remind':
+        if (!mounted) return;
+        await shareText(context, remindText(e.debtor, e.remaining, e.note));
+        break;
+      case 'delete':
+        book.remove(e);
+        break;
+    }
   }
 
   Future<void> _addDebt() async {
@@ -473,6 +657,16 @@ class _DebtsPageState extends State<DebtsPage> {
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              if (open.any((e) => e.promise != null && _soon(e.promise!)))
+                Card(
+                  color: cs.errorContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      '⏰ ${open.where((e) => e.promise != null && _soon(e.promise!)).length} دين يستحق قريباً أو متأخر',
+                    ),
+                  ),
+                ),
               Row(
                 children: [
                   Expanded(
@@ -548,24 +742,7 @@ class _DebtsPageState extends State<DebtsPage> {
               if (open.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Text('السجل', style: Theme.of(context).textTheme.titleMedium),
-                for (final e in open)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('${e.debtor} ← ${e.creditor}'),
-                    subtitle: Text(
-                      '${fmtDate(e.date)}${e.note.isEmpty ? '' : ' · ${e.note}'}',
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('${fmt(e.amount)} $kCurrency'),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => book.remove(e),
-                        ),
-                      ],
-                    ),
-                  ),
+                for (final e in open) _debtTile(e),
               ],
               if (done.isNotEmpty)
                 ExpansionTile(
@@ -842,8 +1019,19 @@ class JamiyaBook extends ChangeNotifier {
   }
 
   void remove(Jamiya j) {
+    final i = items.indexOf(j);
     items.remove(j);
     notifyListeners();
+    final tid = trashPush(_key, j.name, Map<String, dynamic>.from(j.toJson()));
+    showUndo('تم حذف الجمعية', () {
+      if (_disposed) {
+        restoreToPrefs(_key, j.toJson());
+      } else {
+        items.insert(i > items.length ? items.length : i, j);
+        notifyListeners();
+      }
+      trashRemove(tid);
+    });
   }
 
   void togglePaid(Jamiya j, int k, int i) {
