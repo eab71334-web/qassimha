@@ -17,195 +17,103 @@ class MorePage extends StatelessWidget {
   const MorePage({super.key, required this.bill});
   final Bill bill;
 
-  Widget _tile(
+  Widget _item(
     BuildContext context, {
     required IconData icon,
     required String title,
     required String subtitle,
     required Widget Function() page,
   }) {
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_left),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => page()),
+      ),
+    );
+  }
+
+  Widget _group(String title, IconData icon, List<Widget> children,
+      {bool open = false}) {
     return Card(
-      child: ListTile(
-        leading: Icon(icon, size: 30),
+      child: ExpansionTile(
+        initiallyExpanded: open,
+        leading: Icon(icon),
         title: Text(title),
-        subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_left),
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => page()),
-        ),
+        shape: const Border(),
+        collapsedShape: const Border(),
+        children: children,
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    Widget item(IconData i, String t, String s, Widget Function() p) =>
+        _item(context, icon: i, title: t, subtitle: s, page: p);
     return Scaffold(
       appBar: AppBar(title: const Text('المزيد')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           AlertsCard(bill: bill),
-          _tile(
-            context,
-            icon: Icons.swap_horiz,
-            title: 'الديون بين الأصدقاء',
-            subtitle: 'مَن عليه لمَن، وسدّد بضغطة',
-            page: () => DebtsPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.groups_outlined,
-            title: 'الجمعية الشهرية',
-            subtitle: 'جدول القبض ومَن دفع هذا الشهر',
-            page: () => const JamiyaListPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.beach_access_outlined,
-            title: 'الرحلات والمصاريف الجماعية',
-            subtitle: 'كل واحد يسجل ما دفعه، والتسوية بأقل تحويلات',
-            page: () => const TripsListPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.event_repeat,
-            title: 'فواتير متكررة',
-            subtitle: 'إيجار وكهرباء، ومَن عليه الدور هذا الشهر',
-            page: () => const RecurringPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.savings_outlined,
-            title: 'الصندوق المشترك',
-            subtitle: 'إيداع وصرف ورصيد الجماعة',
-            page: () => const FundListPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.insights_outlined,
-            title: 'إحصائيات',
-            subtitle: 'كم صرفتم وأين ومَن دفع أكثر',
-            page: () => StatsPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.qr_code_2,
-            title: 'كود الحساب',
-            subtitle: 'أرسل حسابك بكود، أو افتح كود وصلك',
-            page: () => ShareCodePage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.group_outlined,
-            title: 'مجموعات وقوالب',
-            subtitle: 'احفظ شلتك وأضفها للفاتورة بضغطة',
-            page: () => GroupsPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.casino_outlined,
-            title: 'من يدفع هذه المرة؟',
-            subtitle: 'قرعة مرحة تختار الدافع',
-            page: () => WheelPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.currency_exchange,
-            title: 'عملة أخرى',
-            subtitle: 'الحصص بالدولار أو اليورو وغيرها',
-            page: () => CurrencyPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.volunteer_activism_outlined,
-            title: 'توزيع الإكرامية',
-            subtitle: 'حسب ما أكل كل واحد أو بالتساوي',
-            page: () => TipPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.summarize_outlined,
-            title: 'ملخص أسبوعي',
-            subtitle: 'رسالة جاهزة بما صرفتموه هذا الأسبوع',
-            page: () => WeeklyPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.settings_outlined,
-            title: 'الإعدادات والنسخ الاحتياطي',
-            subtitle: 'المظهر، حجم الخط، بيانات الحوالة، النسخ',
-            page: () => const SettingsPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.person_search_outlined,
-            title: 'سجل الأصدقاء',
-            subtitle: 'كل ما بينك وبين كل صديق: ديون ورحلات وفواتير',
-            page: () => FriendsPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.emoji_events_outlined,
-            title: 'مَن يدفع أكثر؟',
-            subtitle: 'ألقاب مرحة: كريم الشلة والمتهرّب',
-            page: () => const LeaderboardPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.speed_outlined,
-            title: 'الميزانية الشهرية',
-            subtitle: 'سقف للصرف وتنبيه عند الاقتراب منه',
-            page: () => BudgetPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.photo_library_outlined,
-            title: 'صور الإيصالات',
-            subtitle: 'احفظ صورة الإيصال وافتحها لاحقاً',
-            page: () => const ReceiptsPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.table_chart_outlined,
-            title: 'تصدير كشف حساب',
-            subtitle: 'ملف CSV يفتح في Excel',
-            page: () => ExportPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.help_outline,
-            title: 'شرح التطبيق',
-            subtitle: 'عرض شاشة الترحيب من جديد',
-            page: () => const WelcomePage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.request_quote_outlined,
-            title: 'الأقساط',
-            subtitle: 'أقساط لك أو عليك: جدول وسداد وتذكير',
-            page: () => const InstallmentsPage(),
-          ),
-          _tile(
-            context,
-            icon: Icons.search,
-            title: 'بحث',
-            subtitle: 'ابحث بالاسم أو المبلغ أو التاريخ',
-            page: () => SearchPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.assessment_outlined,
-            title: 'تقرير شهري',
-            subtitle: 'ملخص جاهز للمشاركة: الإجمالي والأرصدة',
-            page: () => ReportPage(bill: bill),
-          ),
-          _tile(
-            context,
-            icon: Icons.delete_sweep_outlined,
-            title: 'سلة المحذوفات',
-            subtitle: 'استرجع ما حذفته خلال 30 يوماً',
-            page: () => const TrashPage(),
-          ),
+          _group('الأساسيات', Icons.star_outline, [
+            item(Icons.swap_horiz, 'الديون بين الأصدقاء',
+                'مَن عليه لمَن، دفعات جزئية ووعود سداد', () => DebtsPage(bill: bill)),
+            item(Icons.beach_access_outlined, 'الرحلات والمصاريف الجماعية',
+                'كل واحد يسجل ما دفعه، والتسوية بأقل تحويلات',
+                () => const TripsListPage()),
+            item(Icons.request_quote_outlined, 'الأقساط',
+                'أقساط لك أو عليك: جدول وسداد وتذكير',
+                () => const InstallmentsPage()),
+            item(Icons.groups_outlined, 'الجمعية الشهرية',
+                'جدول القبض ومَن دفع هذا الشهر', () => const JamiyaListPage()),
+          ], open: true),
+          _group('فواتير وصناديق', Icons.account_balance_wallet_outlined, [
+            item(Icons.event_repeat, 'فواتير متكررة',
+                'إيجار وكهرباء، ومَن عليه الدور هذا الشهر',
+                () => const RecurringPage()),
+            item(Icons.savings_outlined, 'الصندوق المشترك',
+                'إيداع وصرف ورصيد الجماعة', () => const FundListPage()),
+            item(Icons.photo_library_outlined, 'صور الإيصالات',
+                'احفظ صورة الإيصال وافتحها لاحقاً', () => const ReceiptsPage()),
+          ]),
+          _group('أدوات التقسيم', Icons.calculate_outlined, [
+            item(Icons.group_outlined, 'مجموعات وقوالب',
+                'احفظ شلتك وأضفها للفاتورة بضغطة', () => GroupsPage(bill: bill)),
+            item(Icons.volunteer_activism_outlined, 'توزيع الإكرامية',
+                'حسب ما أكل كل واحد أو بالتساوي', () => TipPage(bill: bill)),
+            item(Icons.currency_exchange, 'عملة أخرى',
+                'الحصص بالدولار أو اليورو وغيرها', () => CurrencyPage(bill: bill)),
+            item(Icons.qr_code_2, 'كود الحساب',
+                'أرسل حسابك بكود، أو افتح كود وصلك', () => ShareCodePage(bill: bill)),
+            item(Icons.casino_outlined, 'من يدفع هذه المرة؟',
+                'قرعة مرحة تختار الدافع', () => WheelPage(bill: bill)),
+          ]),
+          _group('تقارير وتحليل', Icons.insights_outlined, [
+            item(Icons.assessment_outlined, 'تقرير شهري',
+                'الإجمالي والأرصدة، جاهز للمشاركة', () => ReportPage(bill: bill)),
+            item(Icons.insights_outlined, 'إحصائيات',
+                'كم صرفتم وأين ومَن دفع أكثر', () => StatsPage(bill: bill)),
+            item(Icons.speed_outlined, 'الميزانية الشهرية',
+                'سقف للصرف وتنبيه عند الاقتراب منه', () => BudgetPage(bill: bill)),
+            item(Icons.person_search_outlined, 'سجل الأصدقاء',
+                'كل ما بينك وبين كل صديق', () => FriendsPage(bill: bill)),
+            item(Icons.emoji_events_outlined, 'مَن يدفع أكثر؟',
+                'ألقاب مرحة: كريم الشلة والمتهرّب', () => const LeaderboardPage()),
+            item(Icons.search, 'بحث', 'ابحث بالاسم أو المبلغ أو التاريخ',
+                () => SearchPage(bill: bill)),
+          ]),
+          _group('البيانات والإعدادات', Icons.settings_outlined, [
+            item(Icons.table_chart_outlined, 'تصدير كشف حساب',
+                'ملف CSV يفتح في Excel', () => ExportPage(bill: bill)),
+            item(Icons.delete_sweep_outlined, 'سلة المحذوفات',
+                'استرجع ما حذفته خلال 30 يوماً', () => const TrashPage()),
+            item(Icons.settings_outlined, 'الإعدادات والنسخ الاحتياطي',
+                'المظهر، الملف الشخصي، القفل، النسخ', () => const SettingsPage()),
+          ]),
         ],
       ),
     );

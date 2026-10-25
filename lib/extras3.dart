@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'extras2.dart';
+import 'extras4.dart';
 import 'extras5.dart';
 import 'main.dart';
 
@@ -36,6 +37,95 @@ Future<void> loadAppSettings() async {
   } catch (_) {}
 }
 
+
+/// قائمة العملات للاختيار (رمز، اسم).
+const List<List<String>> kCurrencies = [
+  ['USD', 'دولار أمريكي'],
+  ['EUR', 'يورو'],
+  ['GBP', 'جنيه إسترليني'],
+  ['TND', 'دينار تونسي'],
+  ['EGP', 'جنيه مصري'],
+  ['TRY', 'ليرة تركية'],
+  ['AED', 'درهم إماراتي'],
+  ['SAR', 'ريال سعودي'],
+  ['QAR', 'ريال قطري'],
+  ['KWD', 'دينار كويتي'],
+  ['BHD', 'دينار بحريني'],
+  ['OMR', 'ريال عماني'],
+  ['JOD', 'دينار أردني'],
+  ['LBP', 'ليرة لبنانية'],
+  ['MAD', 'درهم مغربي'],
+  ['DZD', 'دينار جزائري'],
+  ['SDG', 'جنيه سوداني'],
+  ['CNY', 'يوان صيني'],
+  ['RUB', 'روبل روسي'],
+  ['CAD', 'دولار كندي'],
+  ['AUD', 'دولار أسترالي'],
+  ['CHF', 'فرنك سويسري'],
+  ['JPY', 'ين ياباني'],
+  ['INR', 'روبية هندية'],
+  ['MYR', 'رينغيت ماليزي'],
+  ['SEK', 'كرونة سويدية'],
+];
+
+String currencyLabel(String code) {
+  for (final c in kCurrencies) {
+    if (c[0] == code) return '${c[1]} ($code)';
+  }
+  return code;
+}
+
+/// نافذة اختيار عملة من قائمة (مع بحث).
+Future<String?> pickCurrency(BuildContext context, String current) {
+  return showModalBottomSheet<String>(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) {
+      var q = '';
+      return StatefulBuilder(
+        builder: (ctx, setS) {
+          final list = kCurrencies
+              .where((c) => c[0].toLowerCase().contains(q.toLowerCase()) || c[1].contains(q))
+              .toList();
+          return SafeArea(
+            child: SizedBox(
+              height: MediaQuery.of(ctx).size.height * 0.7,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: TextField(
+                      onChanged: (v) => setS(() => q = v.trim()),
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        hintText: 'ابحث عن عملة',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        for (final c in list)
+                          ListTile(
+                            title: Text(c[1]),
+                            subtitle: Text(c[0]),
+                            trailing: c[0] == current ? const Icon(Icons.check) : null,
+                            onTap: () => Navigator.pop(ctx, c[0]),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
 /// حصص الفاتورة الحالية: اسم الشخص -> المبلغ (الأشخاص ذوو الحصص فقط).
 Map<String, double> _currentShares(Bill bill) {
   final t = bill.totals;
@@ -59,14 +149,13 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final pay = TextEditingController(text: gPayInfo);
   final myName = TextEditingController(text: gMyName);
-  final favCur = TextEditingController(text: gFavCurrency);
+  String favCur = gFavCurrency;
   final restore = TextEditingController();
 
   @override
   void dispose() {
     pay.dispose();
     myName.dispose();
-    favCur.dispose();
     restore.dispose();
     super.dispose();
   }
@@ -94,7 +183,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _savePay() async {
     gPayInfo = pay.text.trim();
     gMyName = myName.text.trim();
-    gFavCurrency = favCur.text.trim().isEmpty ? 'USD' : favCur.text.trim();
+    gFavCurrency = favCur;
     final sp = await SharedPreferences.getInstance();
     await sp.setString('qassimha_payinfo', gPayInfo);
     await sp.setString('qassimha_myname', gMyName);
@@ -180,10 +269,15 @@ class _SettingsPageState extends State<SettingsPage> {
             controller: myName,
             decoration: const InputDecoration(labelText: 'اسمك'),
           ),
-          TextField(
-            controller: favCur,
-            decoration: const InputDecoration(
-                labelText: 'عملتك المفضلة للتحويل (USD, EUR…)'),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('عملتك المفضلة للتحويل'),
+            subtitle: Text(currencyLabel(favCur)),
+            trailing: const Icon(Icons.arrow_drop_down),
+            onTap: () async {
+              final c = await pickCurrency(context, favCur);
+              if (c != null) setState(() => favCur = c);
+            },
           ),
           TextField(
             controller: pay,
@@ -197,6 +291,15 @@ class _SettingsPageState extends State<SettingsPage> {
             child: FilledButton(onPressed: _savePay, child: const Text('حفظ')),
           ),
           const Divider(height: 32),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.help_outline),
+            title: const Text('شرح التطبيق'),
+            trailing: const Icon(Icons.chevron_left),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const WelcomePage()),
+            ),
+          ),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.lock_outline),
@@ -638,12 +741,11 @@ class CurrencyPage extends StatefulWidget {
 }
 
 class _CurrencyPageState extends State<CurrencyPage> {
-  final code = TextEditingController(text: gFavCurrency);
+  String code = gFavCurrency;
   final rate = TextEditingController();
 
   @override
   void dispose() {
-    code.dispose();
     rate.dispose();
     super.dispose();
   }
@@ -652,7 +754,7 @@ class _CurrencyPageState extends State<CurrencyPage> {
   Widget build(BuildContext context) {
     final shares = _currentShares(widget.bill);
     final r = parsePrice(rate.text);
-    final c = code.text.trim().isEmpty ? 'USD' : code.text.trim();
+    final c = code;
     final ok = r != null && r > 0;
     String conv(double v) => ok ? '${fmt(v / r!)} $c' : '—';
     return Scaffold(
@@ -660,10 +762,15 @@ class _CurrencyPageState extends State<CurrencyPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          TextField(
-            controller: code,
-            onChanged: (_) => setState(() {}),
-            decoration: const InputDecoration(labelText: 'رمز العملة (USD, EUR, TND…)'),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('العملة'),
+            subtitle: Text(currencyLabel(code)),
+            trailing: const Icon(Icons.arrow_drop_down),
+            onTap: () async {
+              final p = await pickCurrency(context, code);
+              if (p != null) setState(() => code = p);
+            },
           ),
           TextField(
             controller: rate,

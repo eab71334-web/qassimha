@@ -25,7 +25,46 @@ String _norm(String s) {
       .replaceAll(RegExp('[أإآ]'), 'ا')
       .replaceAll('ى', 'ي')
       .replaceAll('ة', 'ه')
+      .replaceAll('ؤ', 'و')
+      .replaceAll('ئ', 'ي')
+      .replaceAll('ء', '')
+      .replaceAll('ث', 'ت')
+      .replaceAll('ذ', 'د')
+      .replaceAll('ظ', 'ض')
+      .replaceAll('ک', 'ك')
+      .replaceAll('ی', 'ي')
+      .replaceAllMapped(RegExp(r'(.)\1{2,}'), (m) => m.group(1)!)
       .toLowerCase();
+}
+
+/// يختصر الحروف المكررة (دييين = دين) للمقارنة المتسامحة.
+String _squash(String s) =>
+    s.replaceAllMapped(RegExp(r'(.)\1+'), (m) => m.group(1)!);
+
+int _dist(String a, String b) {
+  if (a == b) return 0;
+  if ((a.length - b.length).abs() > 2) return 3;
+  var prev = List<int>.generate(b.length + 1, (i) => i);
+  for (var i = 1; i <= a.length; i++) {
+    final cur = List<int>.filled(b.length + 1, 0);
+    cur[0] = i;
+    for (var j = 1; j <= b.length; j++) {
+      final c = a[i - 1] == b[j - 1] ? 0 : 1;
+      cur[j] = [prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + c].reduce((x, y) => x < y ? x : y);
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/// هل الكلمة تشبه الكلمة المفتاحية (مع تسامح مع الأخطاء الإملائية)؟
+bool _close(String t, String w) {
+  if (t == w) return true;
+  if (_squash(t) == _squash(w)) return true;
+  final m = t.length < w.length ? t.length : w.length;
+  if (m < 4) return false;
+  final d = _dist(t, w);
+  return d <= 1 || (m >= 7 && d <= 2);
 }
 
 List<String> _tokens(String s) => s
@@ -141,6 +180,54 @@ const Set<String> _stop = {
   'الان',
   'كم',
   'هل',
+};
+
+const Set<String> _extraStop = {
+  'سلفت',
+  'اسلفت',
+  'اقرضت',
+  'عطيت',
+  'اعطيت',
+  'استلفت',
+  'اقترضت',
+  'سلفني',
+  'اسلفني',
+  'اقرضني',
+  'عطاني',
+  'اعطاني',
+  'احذف',
+  'امسح',
+  'الغي',
+  'شيل',
+  'قسم',
+  'وزع',
+  'اخذت',
+  'خذت',
+  'سدد',
+  'سددت',
+  'دفع',
+  'دفعت',
+  'رجع',
+  'رجعت',
+  'ذكر',
+  'ذكرني',
+  'تذكير',
+  'افتح',
+  'اذهب',
+  'روح',
+  'اعرض',
+  'اظهر',
+  'وريني',
+  'ورني',
+  'قداه',
+  'قداش',
+  'قديش',
+  'بكم',
+  'شحال',
+  'شقد',
+  'كام',
+  'ملخص',
+  'مساعده',
 };
 
 const Set<String> _debtCues = {
@@ -291,7 +378,16 @@ class _AssistantPageState extends State<AssistantPage> {
       return null;
     }
 
-    bool has(Iterable<String> words) => toks.any(words.contains);
+    bool has(Iterable<String> words) {
+      final ws = [for (final w in words) _norm(w)];
+      for (var i = 0; i < toks.length; i++) {
+        final known = canon(toksRaw[i]) != null;
+        for (final w in ws) {
+          if (toks[i] == w || (!known && _close(toks[i], w))) return true;
+        }
+      }
+      return false;
+    }
     bool hasPart(String s) => joined.contains(s);
 
     // مساعدة
@@ -317,15 +413,15 @@ class _AssistantPageState extends State<AssistantPage> {
       var lastSmall = 0;
       for (var i = 0; i < toks.length; i++) {
         var t = toks[i];
-        if (t == 'الاف' && sum > 0 && sum <= 10) {
+        if ((t == 'الاف' || t == 'الاف') && sum > 0 && sum <= 10) {
           sum = sum * 1000;
           amountIdx.add(i);
           continue;
         }
-        if (t.length > 2 && t.startsWith('و') && _numWords.containsKey(t.substring(1))) {
+        if (t.length > 2 && t.startsWith('و') && _numVal(t.substring(1)) != null) {
           t = t.substring(1);
         }
-        final v = _numWords[t];
+        final v = _numVal(t);
         if (v != null) {
           sum += v;
           lastSmall = v;
@@ -396,7 +492,8 @@ class _AssistantPageState extends State<AssistantPage> {
     }
 
     // استعلامات
-    if (has(const {'كم'}) || has(const {'ملخص', 'وضعي', 'حالتي'})) {
+    if (has(const {'كم', 'قداه', 'قداش', 'قديش', 'بكم', 'شحال', 'شقد', 'كام'}) ||
+        has(const {'ملخص', 'وضعي', 'حالتي'})) {
       if (hasPart('صرف') || hasPart('مصروف')) {
         final now = DateTime.now();
         var total = 0.0;
@@ -434,6 +531,50 @@ class _AssistantPageState extends State<AssistantPage> {
         'ملخصك: لك ${fmt(owedToMe(null))}، وعليك ${fmt(iOwe(null))} $kCurrency'
         '، و$open دين مفتوح.${gMyName.trim().isEmpty ? '\n(اكتب اسمك في الإعدادات ← ملفي الشخصي لحساب دقيق)' : ''}',
       );
+    }
+
+    // حاسبة القسمة: «قسّم 300 على 4»
+    if (has(const {'قسم', 'وزع', 'قسمها', 'وزعها'})) {
+      final nums = <double>[];
+      for (final t in toks) {
+        final m = RegExp(r'\d+(?:[.,]\d+)?').firstMatch(t);
+        if (m != null) {
+          final v = double.tryParse(m.group(0)!.replaceAll(',', '.'));
+          if (v != null) nums.add(v);
+        }
+      }
+      if (nums.length >= 2 && nums[1] > 0) {
+        return _Res.say(
+          'كل واحد يدفع ${fmt(nums[0] / nums[1])} $kCurrency (${fmt(nums[0])} ÷ ${nums[1].round()}).',
+        );
+      }
+      if (nums.length == 1 && bill.people.length >= 2) {
+        return _Res.say(
+          'على ${bill.people.length} أشخاص: كل واحد يدفع ${fmt(nums[0] / bill.people.length)} $kCurrency.',
+        );
+      }
+      return _Res.say('اكتب مثلاً: «قسّم 300 على 4».');
+    }
+
+    // حذف ديون شخص
+    if (has(const {'احذف', 'امسح', 'الغي', 'شيل'}) &&
+        mentioned != null &&
+        (hasPart('دين') || hasPart('ديون'))) {
+      final who = mentioned;
+      final count = data.debts
+          .where((d) => !d.settled && (d.debtor == who || d.creditor == who))
+          .length;
+      if (count == 0) return _Res.say('ما فيه ديون مفتوحة مع $who.');
+      return _Res.ask('أحذف $count دين مفتوح مع $who؟ (تجدها في سلة المحذوفات 30 يوماً)', () async {
+        final book = DebtBook();
+        await book.load();
+        for (final d in List<DebtEntry>.of(book.entries)) {
+          if (!d.settled && (d.debtor == who || d.creditor == who)) book.remove(d);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        book.dispose();
+        return 'تم الحذف ✅';
+      });
     }
 
     // تذكير
@@ -530,10 +671,13 @@ class _AssistantPageState extends State<AssistantPage> {
     for (var i = 0; i < toksRaw.length; i++) {
       if (amountIdx.contains(i)) continue;
       final n = toks[i];
-      var isName = !_stop.contains(n);
+      var isName = !_isStopWord(n);
+      if (!isName && !_stopN.contains(n) && canon(toksRaw[i]) != null) {
+        isName = true;
+      }
       // «علي» اسم شخص إذا تلاها كلمة دين
       if ((n == 'علي' || n == 'على') &&
-          ((i + 1 < toks.length && _debtCues.contains(toks[i + 1])) ||
+          ((i + 1 < toks.length && _debtN.contains(toks[i + 1])) ||
               (i > 0 && (toks[i - 1] == 'علي' || toks[i - 1] == 'على')))) {
         isName = true;
       }
@@ -550,7 +694,7 @@ class _AssistantPageState extends State<AssistantPage> {
           tn.length > 3 &&
           tn.startsWith('ل') &&
           (i > 0 &&
-              (_debtCues.contains(toks[i - 1]) ||
+              (_debtN.contains(toks[i - 1]) ||
                   toks[i - 1] == 'علي' ||
                   toks[i - 1] == 'على' ||
                   amountIdx.contains(i - 1) ||
@@ -565,7 +709,21 @@ class _AssistantPageState extends State<AssistantPage> {
       cand.add(k ?? t);
     }
 
-    final isDebt = toks.any(_debtCues.contains) ||
+    final lent = has(const {'سلفت', 'اسلفت', 'اقرضت', 'عطيت', 'اعطيت'});
+    final borrowed = has(const {
+      'استلفت',
+      'اقترضت',
+      'سلفني',
+      'اسلفني',
+      'اقرضني',
+      'عطاني',
+      'اعطاني',
+      'اخذت',
+      'خذت',
+    });
+    final isDebt = has(_debtCues) ||
+        lent ||
+        borrowed ||
         (amount != null && (has(const {'لي', 'ليا'}) || marked.isNotEmpty));
     if (isDebt) {
       final amt = amount;
@@ -577,10 +735,14 @@ class _AssistantPageState extends State<AssistantPage> {
       if (has(const {'لي', 'ليا'})) {
         creditor = me;
         debtor = cand.isNotEmpty ? cand.first : (marked.isNotEmpty ? marked.first : null);
-      } else if (has(const {'عندي', 'لدي'}) ||
+      } else if (borrowed ||
+          has(const {'عندي', 'لدي'}) ||
           (cand.isEmpty && marked.isNotEmpty)) {
         debtor = me;
         creditor = marked.isNotEmpty ? marked.first : (cand.isNotEmpty ? cand.first : null);
+      } else if (lent) {
+        creditor = me;
+        debtor = cand.isNotEmpty ? cand.first : (marked.isNotEmpty ? marked.first : null);
       } else {
         debtor = cand.isNotEmpty ? cand.first : null;
         creditor = marked.isNotEmpty
@@ -660,11 +822,13 @@ class _AssistantPageState extends State<AssistantPage> {
       '💸 الديون: «ضيف دين على أحمد 50 لمحمد» · «أحمد عليه 30» · «عندي لمحمد 20»\n'
       '✅ السداد: «أحمد سدد 20» · «أحمد سدد» (كامل) · «سددت لمحمد»\n'
       '❓ الأسئلة: «كم عليّ؟» · «كم لي؟» · «كم على أحمد؟» · «كم صرفنا هذا الشهر؟» · «ملخص»\n'
+      '🤝 السلف: «سلّفت أحمد 100» · «استلفت من محمد 50» · «احذف ديون أحمد»\n'
+      '🧮 القسمة: «قسّم 300 على 4»\n'
       '🔔 التذكير: «ذكّر أحمد»\n'
       '🧾 الفاتورة: «ضيف أحمد ومحمد» · «ضيف بند بيتزا 25»\n'
       '🏖️ الرحلات: «اعمل رحلة مصيف مع أحمد وعلي»\n'
       '📂 التنقل: «افتح الديون / الرحلات / الأقساط / الإحصائيات…»\n'
-      'أفهم الأرقام بالأرقام أو بالكلمات (خمسين، مية). وأعرض لك ما فهمته قبل التنفيذ دائماً.';
+      'أفهم الأرقام بالأرقام أو بالكلمات (خمسين، مية)، وأتسامح مع أخطاء الكتابة واللهجة (قداه، شحال، سلّفت…). وأعرض لك ما فهمته قبل التنفيذ دائماً.';
 
   @override
   Widget build(BuildContext context) {
@@ -787,4 +951,35 @@ class _AssistantPageState extends State<AssistantPage> {
       ),
     );
   }
+}
+
+final Set<String> _stopN = {for (final w in {..._stop, ..._extraStop}) _norm(w)};
+final Set<String> _debtN = {for (final w in _debtCues) _norm(w)};
+final Map<String, int> _numN = {
+  for (final e in _numWords.entries) _norm(e.key): e.value
+};
+final List<String> _verbsN = [
+  for (final w in {..._stop, ..._extraStop, ..._debtCues})
+    if (_norm(w).length >= 5) _norm(w)
+];
+
+/// هل الكلمة (غير الاسم) من الكلمات العامة، حتى لو أخطأ كاتبها في حرف؟
+bool _isStopWord(String n) {
+  if (_stopN.contains(n)) return true;
+  if (n.length < 5) return false;
+  for (final w in _verbsN) {
+    if (_close(n, w)) return true;
+  }
+  return false;
+}
+
+int? _numVal(String t) {
+  final v = _numN[t];
+  if (v != null) return v;
+  if (t.length >= 5) {
+    for (final e in _numN.entries) {
+      if (e.key.length >= 5 && _close(t, e.key)) return e.value;
+    }
+  }
+  return null;
 }
